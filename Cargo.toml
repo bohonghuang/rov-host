@@ -7,6 +7,9 @@ edition = "2021"
 
 [dependencies]
 gtk4 = "0.3.1"
+relm4 = "0.4.0-beta.2"
+relm4-components = "0.4.0-beta.2"
+relm4-macros = "0.4.0-beta.2"
 opencv = "0.60"
 fragile = "1.0.0"
 gstreamer = "0.17.4"
@@ -18,6 +21,8 @@ glib-macros = "0.14.1"
 strum = "0.23.0"
 strum_macros = "0.23.1"
 dirs = "4.0.0"
+tracker = "0.1.1"
+rand = "0.8.4"
 
 [dependencies.adw]
 package = "libadwaita"

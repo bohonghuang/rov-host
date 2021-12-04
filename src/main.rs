@@ -1,262 +1,214 @@
-use std::cell::RefCell;
-use std::rc::Rc;
-use std::thread;
-use std::time::Duration;
+use std::cell::{Cell, RefCell};
+
+use glib::{Sender, clone};
 
 use gtk4 as gtk;
-use gtk::gio::{Menu, MenuItem, SimpleAction};
+use gtk::{Align, ApplicationWindow, Box as GtkBox, Button, Image, Label, MenuButton, gio::{Menu, MenuItem}, prelude::*};
 
-use gtk::{AboutDialog, Align, HeaderBar, Label, MenuButton};
-use gtk::prelude::*;
-use gtk::{Application, ApplicationWindow, Button, Box as GtkBox, Image};
+use adw::{prelude::*, HeaderBar};
 
-use glib::{Continue, MainContext, PRIORITY_DEFAULT, Receiver, Sender, clone};
-
-use preferences::{Preferences, PreferencesWindowWrapper};
+use preferences::PreferencesModel;
+use relm4::{AppUpdate, ComponentUpdate, Components, Model, RelmApp, RelmComponent, Widgets, actions::{ActionGroupName, ActionName, RelmAction, RelmActionGroup}, factory::FactoryVecDeque, send, new_action_group, new_statful_action, new_statless_action};
+use relm4_macros::widget;
 
 mod preferences;
+mod slave;
+mod components;
 
-fn main() {
-    // gst::init().map_err(|_| "Cannot initialize Gstreamer").unwrap();
-    gtk::init().expect("无法初始化 GTK4");
-    adw::init();
-    let app = Application::builder()
-        .application_id("org.coco24.rovhost-gtk")
-        .build();
-    app.connect_activate(|app| {
-        let main_window = MainWindowWrapper::new(app);
-        main_window.window().present();
-    });
-    app.run();
+use slave::SlaveModel;
+
+use crate::preferences::PreferencesMsg;
+
+#[derive(Default)]
+struct HeaderModel {
+    recording: Option<bool>
 }
 
-enum MainWindowAction {
-    StartRecord,
-    StopRecord,
+impl Model for HeaderModel {
+    type Msg = HeaderMsg;
+    type Widgets = HeaderWidgets;
+    type Components = ();
 }
 
-enum MainWindowUIAction {
+#[widget]
+impl Widgets<HeaderModel, AppModel> for HeaderWidgets {
+    view! {
+        HeaderBar {
+            pack_start = &Button {
+                set_halign: Align::Center,
+                set_sensitive: watch!(model.recording != None),
+                set_css_classes?: watch!(model.recording.map(|x| if x { &["destructive-action"] as &[&str] } else { &[] as &[&str] })),
+                set_child = Some(&GtkBox) {
+                    set_spacing: 6,
+                    append = &Image {
+                        set_icon_name?: watch!(model.recording.map(|x| Some(if x { "media-playback-stop-symbolic" } else { "media-record-symbolic" })))
+                    },
+                    append = &Label {
+                        set_label?: watch!(model.recording.map(|x| if x { "停止" } else { "录制" })),
+                    },
+                },
+                connect_clicked(sender) => move |button| {
+                    send!(sender, HeaderMsg::ToggleRecord);
+                }
+            },
+            pack_end = &MenuButton {
+                set_menu_model: Some(&main_menu),
+                set_icon_name: "open-menu-symbolic",
+                set_focus_on_click: false,
+                set_valign: Align::Center,
+            }
+        }
+    }
+    menu! {
+        main_menu: {
+            "首选项" => PreferencesAction,
+            "键盘快捷键" => KeybindingsAction,
+            "关于" => AboutDialogAction,
+        }
+    }
+}
+
+enum HeaderMsg {
     RecordStarted,
     RecordStopped,
+    ToggleRecord,
 }
 
-struct VideoRecorder {
-    recording: bool
-}
-
-struct RobotController {
-    
-}
-
-impl VideoRecorder {
-    fn start_record(&mut self) {
-        self.recording = true;
+impl ComponentUpdate<AppModel> for HeaderModel {
+    fn init_model(parent_model: &AppModel) -> Self {
+        HeaderModel {
+            recording: Some(parent_model.recording),
+            ..Default::default() }
     }
 
-    fn stop_record(&mut self) {
-        self.recording = false;
-    }
-    
-    fn recording(&self) -> bool {
-        self.recording
-    }
-}
-
-struct MainWindowWrapper {
-    window: ApplicationWindow,
-    ui_sender: Sender<MainWindowUIAction>,
-    video_recorder: Rc<RefCell<VideoRecorder>>,
-    robot_controller: Rc<RefCell<RobotController>>,
-    preferences: Rc<RefCell<Preferences>>,
-    // 1. 使用 ~Rc~ 的目的： \\
-    //    把一个对象转移到闭包里要得到它的所有权，如果直接使用 ~RefCell~ 则要求声明为静态生命周期。
-    // 2. 使用 ~RefCell~ 的目的： \\
-    //    得到可变引用用于开始、停止录制，如果直接使用 ~Rc~ 则无法获得可变引用。
-}
-
-impl MainWindowWrapper {
-    pub fn new(app: &Application) -> MainWindowWrapper {
-        let window = ApplicationWindow::builder()
-            .application(app)
-            .title("水下机器人上位机")
-            .build();
-        let (action_sender, action_receiver) = MainContext::channel(PRIORITY_DEFAULT);
-        let (ui_sender, ui_receiver) = MainContext::channel(PRIORITY_DEFAULT);
-        let video_recorder = VideoRecorder {
-            recording: false
-        };
-        let robot_controller = RobotController {
+    fn update(
+        &mut self,
+        msg: HeaderMsg,
+        components: &(),
+        sender: Sender<HeaderMsg>,
+        parent_sender: Sender<AppMsg>,
+    ) {
+        match msg {
+            HeaderMsg::RecordStarted => {
+                self.recording = Some(true);
+            },
+            HeaderMsg::RecordStopped => {
+                self.recording = Some(false);
+            },
+            HeaderMsg::ToggleRecord => {
+                match self.recording {
+                    Some(recording) => {
+                        self.recording = None;
+                        parent_sender.send(if recording { AppMsg::StopRecord } else { AppMsg::StartRecord }).unwrap();
+                    },
+                    None => (),
+                }
+            },
             
-        };
-        let preferences = Preferences::default();
-        let wrapper = MainWindowWrapper {
-            window,
-            ui_sender,
-            video_recorder: Rc::new(RefCell::new(video_recorder)),
-            robot_controller: Rc::new(RefCell::new(robot_controller)),
-            preferences: Rc::new(RefCell::new(preferences))
-        };
-        
-        wrapper.build_ui(action_sender, ui_receiver);
-        wrapper.handle_actions(action_receiver);
-        wrapper
-    }
-    
-    pub fn window(&self) -> &ApplicationWindow {
-        &self.window
-    }
-
-    fn handle_actions(&self, receiver: Receiver<MainWindowAction>) {
-        let ui_sender = self.ui_sender.clone();
-        let video_recorder = self.video_recorder.clone();
-        receiver.attach(None, move |action| {
-            match action {
-                MainWindowAction::StartRecord => {
-                    video_recorder.borrow_mut().start_record();
-                    thread::spawn(clone!(@strong ui_sender => move || {
-                        thread::sleep(Duration::from_secs(1));
-                        ui_sender.send(MainWindowUIAction::RecordStarted);
-                    }));
-                },
-                MainWindowAction::StopRecord => {
-                    video_recorder.borrow_mut().stop_record();
-                    thread::spawn(clone!(@strong ui_sender => move || {
-                        thread::sleep(Duration::from_secs(1));
-                        ui_sender.send(MainWindowUIAction::RecordStopped);
-                    }));
-                }
-            }
-            Continue(true)
-        });
-    }
-
-    fn build_ui(&self, sender: Sender<MainWindowAction>, receiver: Receiver<MainWindowUIAction>) {
-        let mut ui_action_handlers = Vec::new();
-        let head_bar = HeaderBar::builder().build();
-        
-        let menu = {
-            let menu = Menu::new();
-            let menu_item_preference = MenuItem::new(Some("首选项"), None);
-            let menu_item_keybindings = MenuItem::new(Some("键盘快捷键"), None);
-            let menu_item_about = MenuItem::new(Some("关于"), None);
-            menu_item_preference.set_action_and_target_value(Some("app.preference"), None);
-            menu_item_keybindings.set_action_and_target_value(Some("app.keybindings"), None);
-            menu_item_about.set_action_and_target_value(Some("app.about"), None);
-            menu.append_item(&menu_item_preference);
-            menu.append_item(&menu_item_keybindings);
-            menu.append_item(&menu_item_about);
-            menu
-        };
-        
-        let record_button = {
-            let button = Button::builder() .halign(Align::Center).build();
-            let icon = Image::builder()
-                .valign(Align::Center)
-                .icon_name("media-record-symbolic")
-                .build();
-            let label = Label::builder()
-                .label("录制")
-                .build();
-            let gtkbox = GtkBox::builder()
-                .spacing(6)
-                .build();
-            gtkbox.append(&icon);
-            gtkbox.append(&label);
-            button.set_child(Some(&gtkbox));
-            ui_action_handlers.push(clone!(@strong label, @strong icon, @strong button => move |ui_action: MainWindowUIAction| {
-                match ui_action {
-                    MainWindowUIAction::RecordStarted => {
-                        label.set_text("停止");
-                        icon.set_icon_name(Some("media-playback-stop-symbolic"));
-                        button.add_css_class("destructive-action");
-                        button.set_sensitive(true);
-                        None
-                    }
-                    MainWindowUIAction::RecordStopped => {
-                        label.set_text("录制");
-                        icon.set_icon_name(Some("media-record-symbolic"));
-                        button.remove_css_class("destructive-action");
-                        button.set_sensitive(true);
-                        None
-                    }
-                    _ => Some(ui_action)
-                }
-            }));
-            let video_recorder = self.video_recorder.clone();
-            button.connect_clicked(move |button| {
-                button.set_sensitive(false);
-                if video_recorder.borrow().recording() {
-                    sender.send(MainWindowAction::StopRecord);
-                } else {
-                    sender.send(MainWindowAction::StartRecord);
-                }
-            });
-            button
-        };
-        head_bar.pack_start(&record_button);
-    
-        let menu_button = MenuButton::builder()
-            .valign(Align::Center)
-            .focus_on_click(false)
-            .menu_model(&menu)
-            .icon_name("open-menu-symbolic")
-            .build();
-        head_bar.pack_end(&menu_button);
-    
-        // let settings_button = Button::builder()
-        //     .icon_name("emblem-system-symbolic")
-        //     .build();
-        // settings_button.add_css_class("circular");
-        // settings_button.set_action_name(Some("app.preference"));
-        // head_bar.pack_end(&settings_button);
-        
-        self.window.set_titlebar(Some(&head_bar));
-        
-        let application = self.window.application().unwrap();
-
-        let action_keybindings = SimpleAction::new("keybindings", None);
-        action_keybindings.connect_activate(move |_, _| {
-            
-        });
-        application.add_action(&action_keybindings);
-
-        let action_about = SimpleAction::new("about", None);
-
-        let window = self.window.clone();
-        action_about.connect_activate(move |_, _| {
-            let about_window = AboutDialog::builder()
-                .transient_for(&window)
-                .destroy_with_parent(true)
-                .can_focus(false)
-                .modal(true)
-                .authors(vec![String::from("黄博宏")])
-                .program_name("水下机器人上位机")
-                .copyright("© 2021 集美大学水下智能创新实验室")
-                .comments("跨平台的校园水下机器人上位机程序")
-                .logo_icon_name("applications-games")
-                .version("0.0.1")
-                .build();
-            about_window.show();
-        });
-        application.add_action(&action_about);
-        receiver.attach(None, move |ui_action| {
-            ui_action_handlers.iter().fold(Some(ui_action), |acc, it| {
-                match acc {
-                    Some(action) => it(action),
-                    None => None,
-                }
-            });
-            Continue(true)
-        });
-
-        let action_preference = SimpleAction::new("preference", None);
-        let window = self.window.clone();
-        let preference = self.preferences.clone();
-        action_preference.connect_activate(move |_, _| {
-            let preference_window = PreferencesWindowWrapper::new(&window, preference.clone()); // 由于 ~clone()~ 方法是对引用使用的，因此可以满足 ~Fn~ 的要求（即使传入了捕获变量的所有权，也只能使用捕获变量的引用）
-            preference_window.window().present();
-        });
-        application.add_action(&action_preference);
+        }
     }
 }
 
+#[derive(Default)]
+pub struct AppModel {
+    recording: bool,
+    // slaves: FactoryVecDeque<SlaveModel>
+}
+
+impl Model for AppModel {
+    type Msg = AppMsg;
+    type Widgets = AppWidgets;
+    type Components = AppComponents;
+}
+
+new_action_group!(AppActionGroup, "main");
+new_statless_action!(PreferencesAction, AppActionGroup, "preferences");
+new_statless_action!(KeybindingsAction, AppActionGroup, "keybindings");
+new_statless_action!(AboutDialogAction, AppActionGroup, "about");
+
+#[widget(pub)]
+impl Widgets<AppModel, ()> for AppWidgets {
+    view! {
+        app_window = ApplicationWindow {
+            set_titlebar: Some(components.header.root_widget()),
+            set_title: Some("水下机器人上位机"),
+        }
+    }
+    
+    fn post_init() {
+        let app_group = RelmActionGroup::<AppActionGroup>::new();
+        
+        let action_preferences: RelmAction<PreferencesAction> = RelmAction::new_statelesss(clone!(@strong sender => move |_| {
+            send!(sender, AppMsg::OpenPreferencesWindow);
+        }));
+        let action_keybindings: RelmAction<KeybindingsAction> = RelmAction::new_statelesss(clone!(@strong sender => move |_| {
+            send!(sender, AppMsg::OpenKeybindingsWindow);
+        }));
+        let action_about: RelmAction<AboutDialogAction> = RelmAction::new_statelesss(clone!(@strong sender => move |_| {
+            send!(sender, AppMsg::OpenAboutDialog);
+        }));
+        app_group.add_action(action_preferences);
+        app_group.add_action(action_keybindings);
+        app_group.add_action(action_about);
+        app_window.insert_action_group("main", Some(&app_group.into_action_group()));
+    }
+}
+
+pub enum AppMsg {
+    StartRecord,
+    StopRecord,
+    OpenAboutDialog,
+    OpenPreferencesWindow,
+    OpenKeybindingsWindow,
+}
+
+pub struct AppComponents {
+    header: RelmComponent<HeaderModel, AppModel>,
+    // preferences: RelmComponent<PreferencesModel, AppModel>,
+}
+
+impl AppUpdate for AppModel {
+    fn update(
+        &mut self,
+        msg: AppMsg,
+        components: &AppComponents,
+        sender: Sender<AppMsg>,
+    ) -> bool {
+        match msg {
+            AppMsg::StartRecord => {
+                components.header.send(HeaderMsg::RecordStarted);
+            },
+            AppMsg::StopRecord => {
+                components.header.send(HeaderMsg::RecordStopped);
+            },
+            AppMsg::OpenAboutDialog => todo!(),
+            AppMsg::OpenPreferencesWindow => {
+                RelmComponent::<PreferencesModel, AppModel>::new(self, sender.clone());
+            },
+            AppMsg::OpenKeybindingsWindow => todo!(),
+        }
+        true
+    }
+}
+
+impl Components<AppModel> for AppComponents {
+    fn init_components(parent_model: &AppModel, parent_sender: Sender<AppMsg>)
+        -> Self {
+        AppComponents {
+            header: RelmComponent::new(parent_model, parent_sender.clone()),
+        }
+    }
+    fn connect_parent(&mut self, _parent_widgets: &AppWidgets) {
+        
+    }
+}
+
+fn main() {
+    gtk::init().map(|_| adw::init()).expect("无法初始化 GTK4");
+    let model = AppModel {
+        ..Default::default()
+    };
+    
+    let relm = RelmApp::new(model);
+    relm.run()
+}
