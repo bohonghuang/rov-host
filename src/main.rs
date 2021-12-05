@@ -3,7 +3,7 @@ use std::cell::{Cell, RefCell};
 use glib::{Sender, clone};
 
 use gtk4 as gtk;
-use gtk::{Align, ApplicationWindow, Box as GtkBox, Button, Image, Label, MenuButton, gio::{Menu, MenuItem}, prelude::*};
+use gtk::{AboutDialog, Align, ApplicationWindow, Box as GtkBox, Button, Image, Label, MenuButton, gio::{Menu, MenuItem}, prelude::*};
 
 use adw::{prelude::*, HeaderBar};
 
@@ -18,6 +18,8 @@ mod components;
 use slave::SlaveModel;
 
 use crate::preferences::PreferencesMsg;
+
+use derivative::*;
 
 #[derive(Default)]
 struct HeaderModel {
@@ -109,10 +111,39 @@ impl ComponentUpdate<AppModel> for HeaderModel {
     }
 }
 
+struct AboutModel {}
+enum AboutMsg {}
+impl Model for AboutModel {
+    type Msg = AboutMsg;
+    type Widgets = AboutWidgets;
+    type Components = ();
+}
+#[widget]
+impl Widgets<AboutModel, AppModel> for AboutWidgets {
+    view! {
+        dialog = AboutDialog {
+            set_transient_for: parent!(Some(&parent_widgets.app_window)),
+            set_destroy_with_parent: true,
+            set_can_focus: false,
+            set_modal: true,
+            set_visible: true,
+            set_authors: &["黄博宏"],
+            set_program_name: Some("水下机器人上位机"),
+            set_copyright: Some("© 2021 集美大学水下智能创新实验室"),
+            set_comments: Some("跨平台的校园水下机器人上位机程序"),
+            set_logo_icon_name: Some("applications-games"),
+            set_version: Some("0.0.1"),
+        }
+    }
+}
+impl ComponentUpdate<AppModel> for AboutModel {
+    fn init_model(parent_model: &AppModel) -> Self { AboutModel {} }
+    fn update(&mut self, msg: AboutMsg, components: &(), sender: Sender<AboutMsg>, parent_sender: Sender<AppMsg>) {}
+}
+
 #[derive(Default)]
 pub struct AppModel {
     recording: bool,
-    // slaves: FactoryVecDeque<SlaveModel>
 }
 
 impl Model for AppModel {
@@ -162,9 +193,9 @@ pub enum AppMsg {
     OpenKeybindingsWindow,
 }
 
+#[derive(relm4_macros::Components)]
 pub struct AppComponents {
     header: RelmComponent<HeaderModel, AppModel>,
-    // preferences: RelmComponent<PreferencesModel, AppModel>,
 }
 
 impl AppUpdate for AppModel {
@@ -181,7 +212,9 @@ impl AppUpdate for AppModel {
             AppMsg::StopRecord => {
                 components.header.send(HeaderMsg::RecordStopped);
             },
-            AppMsg::OpenAboutDialog => todo!(),
+            AppMsg::OpenAboutDialog => {
+                RelmComponent::<AboutModel, AppModel>::new(self, sender.clone());
+            },
             AppMsg::OpenPreferencesWindow => {
                 RelmComponent::<PreferencesModel, AppModel>::new(self, sender.clone());
             },
@@ -191,23 +224,14 @@ impl AppUpdate for AppModel {
     }
 }
 
-impl Components<AppModel> for AppComponents {
-    fn init_components(parent_model: &AppModel, parent_sender: Sender<AppMsg>)
-        -> Self {
-        AppComponents {
-            header: RelmComponent::new(parent_model, parent_sender.clone()),
-        }
-    }
-    fn connect_parent(&mut self, _parent_widgets: &AppWidgets) {
-        
-    }
-}
-
 fn main() {
     gtk::init().map(|_| adw::init()).expect("无法初始化 GTK4");
     let model = AppModel {
         ..Default::default()
     };
+    // let model = components::AppModel {
+    //     mode: components::AppMode
+    // };
     
     let relm = RelmApp::new(model);
     relm.run()
