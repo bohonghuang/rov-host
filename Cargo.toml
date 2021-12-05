@@ -24,6 +24,8 @@ dirs = "4.0.0"
 tracker = "0.1.1"
 rand = "0.8.4"
 derivative = "2.0.2"
+sdl2 = "0.35.1"
+sdl2-sys = "0.35.1"
 
 [dependencies.adw]
 package = "libadwaita"

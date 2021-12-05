@@ -1,23 +1,22 @@
-use std::cell::{Cell, RefCell};
+use std::{cell::{Cell, RefCell}, net::Ipv4Addr, rc::Rc};
 
-use glib::{Sender, clone};
+use glib::{Sender, Type, clone};
 
 use gtk4 as gtk;
-use gtk::{AboutDialog, Align, ApplicationWindow, Box as GtkBox, Button, Image, Label, MenuButton, gio::{Menu, MenuItem}, prelude::*};
+use gtk::{AboutDialog, Align, ApplicationWindow, Box as GtkBox, Button, CenterBox, Frame, Grid, Image, Inhibit, Label, MenuButton, Orientation, Stack, gio::{Menu, MenuItem}, prelude::*};
 
-use adw::{prelude::*, HeaderBar};
+use adw::{HeaderBar, StatusPage, Window, prelude::*};
 
 use preferences::PreferencesModel;
-use relm4::{AppUpdate, ComponentUpdate, Components, Model, RelmApp, RelmComponent, Widgets, actions::{ActionGroupName, ActionName, RelmAction, RelmActionGroup}, factory::FactoryVecDeque, send, new_action_group, new_statful_action, new_statless_action};
+use relm4::{AppUpdate, ComponentUpdate, Components, Model, RelmApp, RelmComponent, Widgets, actions::{ActionGroupName, ActionName, RelmAction, RelmActionGroup}, factory::{DynamicIndex, FactoryPrototype, FactoryVec, FactoryVecDeque, positions::GridPosition}, new_action_group, new_statful_action, new_statless_action, send};
 use relm4_macros::widget;
 
 mod preferences;
 mod slave;
 mod components;
+mod prelude;
 
-use slave::SlaveModel;
-
-use crate::preferences::PreferencesMsg;
+use crate::{preferences::PreferencesMsg, slave::{SlaveConfigModel, SlaveModel}};
 
 use derivative::*;
 
@@ -58,7 +57,13 @@ impl Widgets<HeaderModel, AppModel> for HeaderWidgets {
                 set_icon_name: "open-menu-symbolic",
                 set_focus_on_click: false,
                 set_valign: Align::Center,
-            }
+            },
+            pack_end = &Button {
+                set_icon_name: "window-new-symbolic",
+                connect_clicked(sender) => move |button| {
+                    send!(sender, HeaderMsg::NewSlave);
+                },
+            },
         }
     }
     menu! {
@@ -74,13 +79,15 @@ enum HeaderMsg {
     RecordStarted,
     RecordStopped,
     ToggleRecord,
+    NewSlave, 
 }
 
 impl ComponentUpdate<AppModel> for HeaderModel {
     fn init_model(parent_model: &AppModel) -> Self {
         HeaderModel {
             recording: Some(parent_model.recording),
-            ..Default::default() }
+            ..Default::default()
+        }
     }
 
     fn update(
@@ -106,7 +113,7 @@ impl ComponentUpdate<AppModel> for HeaderModel {
                     None => (),
                 }
             },
-            
+            HeaderMsg::NewSlave => send!(parent_sender, AppMsg::NewSlave),
         }
     }
 }
@@ -141,9 +148,13 @@ impl ComponentUpdate<AppModel> for AboutModel {
     fn update(&mut self, msg: AboutMsg, components: &(), sender: Sender<AboutMsg>, parent_sender: Sender<AppMsg>) {}
 }
 
-#[derive(Default)]
+#[derive(Derivative)]
+#[derivative(Default)]
 pub struct AppModel {
     recording: bool,
+    #[derivative(Default(value="FactoryVec::new()"))]
+    slaves: FactoryVec<SlaveModel>,
+    preferences: PreferencesModel,
 }
 
 impl Model for AppModel {
@@ -163,6 +174,21 @@ impl Widgets<AppModel, ()> for AppWidgets {
         app_window = ApplicationWindow {
             set_titlebar: Some(components.header.root_widget()),
             set_title: Some("水下机器人上位机"),
+            set_width_request: 1280,
+            set_height_request: 720, 
+            set_child = Some(&Stack) {
+                add_child = &StatusPage {
+                    set_icon_name: Some("window-new-symbolic"),
+                    set_title: "无机位",
+                    set_visible: watch!(model.slaves.len() == 0),
+                    set_description: Some("请点击标题栏右侧按钮添加机位"),
+                },
+                add_child = &Grid {
+                    set_hexpand: true,
+                    set_vexpand: true,
+                    factory!(model.slaves),
+                },
+            },
         }
     }
     
@@ -182,10 +208,17 @@ impl Widgets<AppModel, ()> for AppWidgets {
         app_group.add_action(action_keybindings);
         app_group.add_action(action_about);
         app_window.insert_action_group("main", Some(&app_group.into_action_group()));
+        for _ in 0..*model.preferences.get_initial_slave_num() {
+            send!(sender, AppMsg::NewSlave);
+        }
     }
 }
 
 pub enum AppMsg {
+    NewSlave,
+    SlaveConfigUpdated(usize, SlaveConfigModel),
+    DisplaySlaveConfigWindow(usize),
+    PreferencesUpdated(PreferencesModel),
     StartRecord,
     StopRecord,
     OpenAboutDialog,
@@ -193,9 +226,22 @@ pub enum AppMsg {
     OpenKeybindingsWindow,
 }
 
-#[derive(relm4_macros::Components)]
 pub struct AppComponents {
     header: RelmComponent<HeaderModel, AppModel>,
+}
+
+impl Components<AppModel> for AppComponents {
+    fn init_components(parent_model: &AppModel, parent_sender: Sender<AppMsg>)
+                       -> Self {
+        Self {
+            header: RelmComponent::new(parent_model, parent_sender.clone()),
+        }
+        
+    }
+
+    fn connect_parent(&mut self, _parent_widgets: &AppWidgets) {
+        self.header.connect_parent(_parent_widgets);
+    }
 }
 
 impl AppUpdate for AppModel {
@@ -207,10 +253,10 @@ impl AppUpdate for AppModel {
     ) -> bool {
         match msg {
             AppMsg::StartRecord => {
-                components.header.send(HeaderMsg::RecordStarted);
+                components.header.send(HeaderMsg::RecordStarted).unwrap();
             },
             AppMsg::StopRecord => {
-                components.header.send(HeaderMsg::RecordStopped);
+                components.header.send(HeaderMsg::RecordStopped).unwrap();
             },
             AppMsg::OpenAboutDialog => {
                 RelmComponent::<AboutModel, AppModel>::new(self, sender.clone());
@@ -219,6 +265,24 @@ impl AppUpdate for AppModel {
                 RelmComponent::<PreferencesModel, AppModel>::new(self, sender.clone());
             },
             AppMsg::OpenKeybindingsWindow => todo!(),
+            AppMsg::NewSlave => {
+                let mut ip_octets = self.preferences.get_default_slave_ipv4_address().octets();
+                let index = self.slaves.len() as u8;
+                ip_octets[3] = ip_octets[3].wrapping_add(index);
+                self.slaves.push(SlaveModel::new(index as usize, SlaveConfigModel::new(Ipv4Addr::from(ip_octets), *self.preferences.get_default_slave_port())));
+            },
+            AppMsg::DisplaySlaveConfigWindow(index) => {
+                if let Some(slave) = self.slaves.get_mut(index) {
+                    slave.config.set_window_presented(true);
+                }
+            },
+            AppMsg::PreferencesUpdated(preferences) => {
+                self.preferences = preferences;
+            },
+            AppMsg::SlaveConfigUpdated(index, config) =>
+                if let Some(slave) = self.slaves.get_mut(index) {
+                    slave.set_config(config);
+                },
         }
         true
     }
@@ -232,7 +296,12 @@ fn main() {
     // let model = components::AppModel {
     //     mode: components::AppMode
     // };
-    
+    // let btn = Button::new();
+    // unsafe {
+    //     btn.set_data("aaaa", "Hello");
+    //     let a: &str = *btn.data("aaaa").unwrap().as_ref();
+    //     println!("{}", a);
+    // };
     let relm = RelmApp::new(model);
     relm.run()
 }

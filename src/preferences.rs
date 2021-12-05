@@ -1,4 +1,4 @@
-use std::fs;
+use std::{fs, net::Ipv4Addr, path::PathBuf, str::FromStr};
 
 use glib::{Sender, clone};
 
@@ -15,7 +15,9 @@ use strum_macros::{EnumIter, EnumString as EnumFromString, Display as EnumToStri
 
 use crate::{AppModel, AppMsg};
 
-#[derive(EnumIter, EnumToString, EnumFromString, PartialEq)]
+use derivative::*;
+
+#[derive(EnumIter, EnumToString, EnumFromString, PartialEq, Clone)]
 pub enum VideoEncoder {
     Copy, H264, H265, WEBM
 }
@@ -24,20 +26,50 @@ impl Default for VideoEncoder {
     fn default() -> Self { Self::Copy }
 }
 
+fn get_data_path() -> PathBuf {
+    const app_dir_name: &str = "RovHost";
+    let mut data_path = dirs::data_local_dir().expect("无法找到本地数据文件夹");
+    data_path.push(app_dir_name);
+    if !data_path.exists() {
+        fs::create_dir(data_path.clone()).expect("无法创建应用数据文件夹");
+    }
+    data_path
+}
+
+fn get_video_path() -> PathBuf {
+    let mut video_path = get_data_path();
+    video_path.push("Videos");
+    if !video_path.exists() {
+        fs::create_dir(video_path.clone()).expect("无法创建视频文件夹");
+    }
+    video_path
+}
+
 #[tracker::track]
-#[derive(Default)]
+#[derive(Derivative, Clone)]
+#[derivative(Default)]
 pub struct PreferencesModel {
-    video_save_path: String,
-    video_encoder: VideoEncoder,
-    default_slave_ipv4_address: String,
-    default_slave_port: u16,
+    #[derivative(Default(value="0"))]
+    pub initial_slave_num: u8,
+    #[derivative(Default(value="String::from(get_video_path().to_str().unwrap())"))]
+    pub video_save_path: String,
+    #[derivative(Default(value="VideoEncoder::Copy"))]
+    pub video_encoder: VideoEncoder,
+    #[derivative(Default(value="Ipv4Addr::new(192, 168, 137, 219)"))]
+    pub default_slave_ipv4_address: Ipv4Addr,
+    #[derivative(Default(value="8888"))]
+    pub default_slave_port: u16,
+    #[derivative(Default(value="5600"))]
+    pub default_local_video_port: u16,
 }
 
 pub enum PreferencesMsg {
     SetVideoSavePath(String),
     SetVideoEncoder(VideoEncoder),
-    SetSlaveDefaultIPV4Address(String),
+    SetSlaveDefaultIpv4Address(Ipv4Addr),
     SetSlaveDefaultPort(u16),
+    SetInitialSlaveNum(u8),
+    SetDefaultLocalVideoPort(u16),
 }
 
 impl Model for PreferencesModel {
@@ -56,6 +88,26 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
             set_visible: true,
             set_can_swipe_back: true,
             add = &PreferencesPage {
+                set_title: "通用",
+                set_icon_name: Some("view-grid-symbolic"),
+                add = &PreferencesGroup {
+                    set_title: "机位",
+                    set_description: Some("配置上位机的多机位功能"),
+                    add = &ActionRow {
+                        set_title: "初始机位",
+                        set_subtitle: "程序启动时的初始机位数量",
+                        add_suffix = &SpinButton::with_range(0.0, 12.0, 1.0) {
+                            set_value: track!(model.changed(PreferencesModel::initial_slave_num()), model.initial_slave_num as f64),
+                            set_digits: 0,
+                            set_valign: Align::Center,
+                            connect_changed(sender) => move |button| {
+                                send!(sender, PreferencesMsg::SetInitialSlaveNum(button.value() as u8));
+                            }
+                        }
+                    }
+                }
+            },
+            add = &PreferencesPage {
                 set_title: "网络",
                 set_icon_name: Some("network-transmit-receive-symbolic"),
                 add = &PreferencesGroup {
@@ -65,10 +117,13 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                         set_title: "默认地址",
                         set_subtitle: "第一机位的机器人使用的默认IPV4地址，其他机位的地址将在该基础上进行累加",
                         add_suffix = &Entry {
-                            set_text: track!(model.changed(PreferencesModel::default_slave_ipv4_address()), model.default_slave_ipv4_address.as_str()),
+                            set_text: track!(model.changed(PreferencesModel::default_slave_ipv4_address()), model.default_slave_ipv4_address.to_string().as_str()),
                             set_valign: Align::Center,
                             connect_changed(sender) => move |entry| {
-                                send!(sender, PreferencesMsg::SetSlaveDefaultIPV4Address(String::from(entry.text())));
+                                match Ipv4Addr::from_str(&entry.text()) {
+                                    Ok(addr) => send!(sender, PreferencesMsg::SetSlaveDefaultIpv4Address(addr)),
+                                    Err(_) => (),
+                                }
                             }
                          },
                     },
@@ -86,9 +141,26 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                     },
                 },
             },
+            
             add = &PreferencesPage {
                 set_title: "视频",
                 set_icon_name: Some("emblem-videos-symbolic"),
+                add = &PreferencesGroup {
+                    set_title: "拉流",
+                    set_description: Some("从下位机拉取视频流的选项"),
+                    add = &ActionRow {
+                        set_title: "默认端口",
+                        set_subtitle: "拉取第一个机位的视频流使用的默认本地端口，其他机位的端口将在该基础上进行累加",
+                        add_suffix = &SpinButton::with_range(0.0, 65535.0, 1.0) {
+                            set_value: track!(model.changed(PreferencesModel::default_local_video_port()), model.default_local_video_port as f64),
+                            set_digits: 0,
+                            set_valign: Align::Center,
+                            connect_changed(sender) => move |button| {
+                                send!(sender, PreferencesMsg::SetDefaultLocalVideoPort(button.value() as u16));
+                            }
+                        },
+                    }
+                },
                 add = &PreferencesGroup {
                     set_title: "录制",
                     set_description: Some("视频流的录制选项"),
@@ -111,7 +183,7 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                             model
                         }),
                         set_selected: track!(model.changed(PreferencesModel::video_encoder()), VideoEncoder::iter().position(|x| x == model.video_encoder).unwrap() as u32),
-                        connect_selected_notify(sender) => move |row| {
+                        connect_activated(sender) => move |row| {
                             send!(sender, PreferencesMsg::SetVideoEncoder(VideoEncoder::iter().nth(row.selected() as usize).unwrap()))
                         }
                     }
@@ -123,24 +195,7 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
 
 impl ComponentUpdate<AppModel> for PreferencesModel {
     fn init_model(parent_model: &AppModel) -> Self {
-        let app_dir_name = "RovHost";
-        let mut data_path = dirs::data_local_dir().expect("无法找到本地数据文件夹");
-        data_path.push(app_dir_name);
-        if !data_path.exists() {
-            fs::create_dir(data_path.clone()).expect("无法创建应用数据文件夹");
-        }
-        let mut video_path = data_path.clone();
-        video_path.push("Videos");
-        if !video_path.exists() {
-            fs::create_dir(video_path.clone()).expect("无法创建视频文件夹");
-        }
-        Self {
-            video_save_path: video_path.to_str().unwrap().to_string(),
-            video_encoder: Default::default(),
-            default_slave_ipv4_address: String::from("192.168.137.219"),
-            default_slave_port: 5600, 
-            ..Default::default()
-        }
+        parent_model.preferences.clone()
     }
     fn update(
         &mut self,
@@ -152,9 +207,12 @@ impl ComponentUpdate<AppModel> for PreferencesModel {
         match msg {
             PreferencesMsg::SetVideoSavePath(path) => self.video_save_path = path,
             PreferencesMsg::SetVideoEncoder(encoder) => self.video_encoder = encoder,
-            PreferencesMsg::SetSlaveDefaultIPV4Address(address) => self.default_slave_ipv4_address = address,
+            PreferencesMsg::SetSlaveDefaultIpv4Address(address) => self.default_slave_ipv4_address = address,
             PreferencesMsg::SetSlaveDefaultPort(port) => self.default_slave_port = port,
+            PreferencesMsg::SetInitialSlaveNum(num) => self.initial_slave_num = num,
+            PreferencesMsg::SetDefaultLocalVideoPort(port) => self.default_local_video_port = port,
         }
+        send!(parent_sender, AppMsg::PreferencesUpdated(self.clone()));
     }
 }
 
