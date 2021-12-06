@@ -1,6 +1,9 @@
 use std::{cell::{Cell, RefCell}, net::Ipv4Addr, rc::Rc};
 
+use fragile::Fragile;
 use glib::{Sender, Type, clone};
+
+use gstreamer as gst;
 
 use gtk4 as gtk;
 use gtk::{AboutDialog, Align, ApplicationWindow, Box as GtkBox, Button, CenterBox, Frame, Grid, Image, Inhibit, Label, MenuButton, Orientation, Stack, gio::{Menu, MenuItem}, prelude::*};
@@ -10,18 +13,23 @@ use adw::{HeaderBar, StatusPage, Window, prelude::*};
 use preferences::PreferencesModel;
 use relm4::{AppUpdate, ComponentUpdate, Components, Model, RelmApp, RelmComponent, Widgets, actions::{ActionGroupName, ActionName, RelmAction, RelmActionGroup}, factory::{DynamicIndex, FactoryPrototype, FactoryVec, FactoryVecDeque, positions::GridPosition}, new_action_group, new_statful_action, new_statless_action, send};
 use relm4_macros::widget;
+use lazy_static::{__Deref, lazy_static};
 
 mod preferences;
 mod slave;
 mod components;
 mod prelude;
+mod video;
 
-use crate::{preferences::PreferencesMsg, slave::{SlaveConfigModel, SlaveModel}};
+use crate::{preferences::PreferencesMsg, slave::{SlaveConfigModel, SlaveConfigMsg, SlaveModel, SlaveVideoMsg}};
 
 use derivative::*;
 
-#[derive(Default)]
+#[tracker::track]
+#[derive(Derivative)]
+#[derivative(Default)]
 struct HeaderModel {
+    #[derivative(Default(value="None"))]
     recording: Option<bool>
 }
 
@@ -37,7 +45,6 @@ impl Widgets<HeaderModel, AppModel> for HeaderWidgets {
         HeaderBar {
             pack_start = &Button {
                 set_halign: Align::Center,
-                set_sensitive: watch!(model.recording != None),
                 set_css_classes?: watch!(model.recording.map(|x| if x { &["destructive-action"] as &[&str] } else { &[] as &[&str] })),
                 set_child = Some(&GtkBox) {
                     set_spacing: 6,
@@ -48,6 +55,7 @@ impl Widgets<HeaderModel, AppModel> for HeaderWidgets {
                         set_label?: watch!(model.recording.map(|x| if x { "停止" } else { "录制" })),
                     },
                 },
+                set_sensitive: watch!(model.recording != None),
                 connect_clicked(sender) => move |button| {
                     send!(sender, HeaderMsg::ToggleRecord);
                 }
@@ -60,6 +68,7 @@ impl Widgets<HeaderModel, AppModel> for HeaderWidgets {
             },
             pack_end = &Button {
                 set_icon_name: "window-new-symbolic",
+                set_sensitive: track!(model.changed(HeaderModel::recording()), model.recording != Some(true)),
                 connect_clicked(sender) => move |button| {
                     send!(sender, HeaderMsg::NewSlave);
                 },
@@ -68,16 +77,15 @@ impl Widgets<HeaderModel, AppModel> for HeaderWidgets {
     }
     menu! {
         main_menu: {
-            "首选项" => PreferencesAction,
+            "首选项"     => PreferencesAction,
             "键盘快捷键" => KeybindingsAction,
-            "关于" => AboutDialogAction,
+            "关于"       => AboutDialogAction,
         }
     }
 }
 
 enum HeaderMsg {
-    RecordStarted,
-    RecordStopped,
+    SetRecording(Option<bool>),
     ToggleRecord,
     NewSlave, 
 }
@@ -85,7 +93,7 @@ enum HeaderMsg {
 impl ComponentUpdate<AppModel> for HeaderModel {
     fn init_model(parent_model: &AppModel) -> Self {
         HeaderModel {
-            recording: Some(parent_model.recording),
+            // recording: Some(parent_model.recording),
             ..Default::default()
         }
     }
@@ -98,17 +106,14 @@ impl ComponentUpdate<AppModel> for HeaderModel {
         parent_sender: Sender<AppMsg>,
     ) {
         match msg {
-            HeaderMsg::RecordStarted => {
-                self.recording = Some(true);
-            },
-            HeaderMsg::RecordStopped => {
-                self.recording = Some(false);
+            HeaderMsg::SetRecording(recording) => {
+                self.set_recording(recording);
             },
             HeaderMsg::ToggleRecord => {
-                match self.recording {
+                match *self.get_recording() {
                     Some(recording) => {
-                        self.recording = None;
-                        parent_sender.send(if recording { AppMsg::StopRecord } else { AppMsg::StartRecord }).unwrap();
+                        self.set_recording(None);
+                        parent_sender.send(AppMsg::SetRecording(!recording)).unwrap();
                     },
                     None => (),
                 }
@@ -148,13 +153,16 @@ impl ComponentUpdate<AppModel> for AboutModel {
     fn update(&mut self, msg: AboutMsg, components: &(), sender: Sender<AboutMsg>, parent_sender: Sender<AppMsg>) {}
 }
 
+#[tracker::track]
 #[derive(Derivative)]
 #[derivative(Default)]
 pub struct AppModel {
     recording: bool,
+    #[no_eq]
     #[derivative(Default(value="FactoryVec::new()"))]
     slaves: FactoryVec<SlaveModel>,
-    preferences: PreferencesModel,
+    #[no_eq]
+    preferences: Rc<RefCell<PreferencesModel>>,
 }
 
 impl Model for AppModel {
@@ -208,7 +216,7 @@ impl Widgets<AppModel, ()> for AppWidgets {
         app_group.add_action(action_keybindings);
         app_group.add_action(action_about);
         app_window.insert_action_group("main", Some(&app_group.into_action_group()));
-        for _ in 0..*model.preferences.get_initial_slave_num() {
+        for _ in 0..*model.preferences.borrow().get_initial_slave_num() {
             send!(sender, AppMsg::NewSlave);
         }
     }
@@ -217,31 +225,18 @@ impl Widgets<AppModel, ()> for AppWidgets {
 pub enum AppMsg {
     NewSlave,
     SlaveConfigUpdated(usize, SlaveConfigModel),
-    DisplaySlaveConfigWindow(usize),
+    SlaveToggleConnect(usize),
+    SlaveTogglePolling(usize),
     PreferencesUpdated(PreferencesModel),
-    StartRecord,
-    StopRecord,
+    SetRecording(bool), 
     OpenAboutDialog,
     OpenPreferencesWindow,
     OpenKeybindingsWindow,
 }
 
+#[derive(relm4_macros::Components)]
 pub struct AppComponents {
     header: RelmComponent<HeaderModel, AppModel>,
-}
-
-impl Components<AppModel> for AppComponents {
-    fn init_components(parent_model: &AppModel, parent_sender: Sender<AppMsg>)
-                       -> Self {
-        Self {
-            header: RelmComponent::new(parent_model, parent_sender.clone()),
-        }
-        
-    }
-
-    fn connect_parent(&mut self, _parent_widgets: &AppWidgets) {
-        self.header.connect_parent(_parent_widgets);
-    }
 }
 
 impl AppUpdate for AppModel {
@@ -252,11 +247,12 @@ impl AppUpdate for AppModel {
         sender: Sender<AppMsg>,
     ) -> bool {
         match msg {
-            AppMsg::StartRecord => {
-                components.header.send(HeaderMsg::RecordStarted).unwrap();
-            },
-            AppMsg::StopRecord => {
-                components.header.send(HeaderMsg::RecordStopped).unwrap();
+            AppMsg::SetRecording(recording) => {
+                // slave::COMPONENTS.get().borrow_mut()
+                for components in slave::COMPONENTS.get().borrow().deref() {
+                    components.video.send(SlaveVideoMsg::SetRecording(recording)).unwrap();
+                }
+                components.header.send(HeaderMsg::SetRecording(Some(recording))).unwrap();
             },
             AppMsg::OpenAboutDialog => {
                 RelmComponent::<AboutModel, AppModel>::new(self, sender.clone());
@@ -266,29 +262,54 @@ impl AppUpdate for AppModel {
             },
             AppMsg::OpenKeybindingsWindow => todo!(),
             AppMsg::NewSlave => {
-                let mut ip_octets = self.preferences.get_default_slave_ipv4_address().octets();
-                let index = self.slaves.len() as u8;
+                let mut ip_octets = self.get_preferences().borrow().get_default_slave_ipv4_address().octets();
+                let index = self.get_slaves().len() as u8;
                 ip_octets[3] = ip_octets[3].wrapping_add(index);
-                self.slaves.push(SlaveModel::new(index as usize, SlaveConfigModel::new(Ipv4Addr::from(ip_octets), *self.preferences.get_default_slave_port())));
-            },
-            AppMsg::DisplaySlaveConfigWindow(index) => {
-                if let Some(slave) = self.slaves.get_mut(index) {
-                    slave.config.set_window_presented(true);
-                }
+                let video_port = self.get_preferences().borrow().get_default_local_video_port().wrapping_add(index as u16);
+                self.slaves.push(SlaveModel::new(index as usize, SlaveConfigModel::new(index as usize, Ipv4Addr::from(ip_octets), *self.get_preferences().clone().borrow().get_default_slave_port(), video_port), self.get_preferences().clone()));
+                components.header.send(HeaderMsg::SetRecording(Some(false)));
             },
             AppMsg::PreferencesUpdated(preferences) => {
-                self.preferences = preferences;
+                *self.get_preferences().borrow_mut() = preferences;
+                self.set_preferences(self.get_preferences().clone());
             },
             AppMsg::SlaveConfigUpdated(index, config) =>
-                if let Some(slave) = self.slaves.get_mut(index) {
-                    slave.set_config(config);
+                if let Some(slave) = self.get_mut_slaves().get_mut(index) {
+                    *slave.get_config().borrow_mut() = config;
+                    slave.set_config(slave.get_config().clone());
                 },
+            AppMsg::SlaveToggleConnect(index) => {
+                if let Some(slave) = self.get_mut_slaves().get_mut(index) {
+                    slave.set_connected(None);
+                }
+            },
+            AppMsg::SlaveTogglePolling(index) => {
+                if let Some(slave) = self.get_mut_slaves().get_mut(index) {
+                    if let Some(components) = slave::COMPONENTS.get().borrow_mut().get(index) {
+                        match slave.get_polling() {
+                            Some(true) =>{
+                                components.video.send(SlaveVideoMsg::SetPipeline(None)).unwrap();
+                                slave.set_polling(Some(false));
+                            },
+                            Some(false) => {
+                                components.video.send(SlaveVideoMsg::SetPipeline(Some(video::create_pipeline(*slave.get_config().borrow().get_video_port()).unwrap()))).unwrap();
+                                slave.set_polling(Some(true));
+                            },
+                            None => (),
+                        }
+                    }
+                }
+            },
+        }
+        for i in 0..self.slaves.len() {
+            self.get_mut_slaves().get_mut(i).unwrap();
         }
         true
     }
 }
 
 fn main() {
+    gst::init();
     gtk::init().map(|_| adw::init()).expect("无法初始化 GTK4");
     let model = AppModel {
         ..Default::default()

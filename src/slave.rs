@@ -1,9 +1,12 @@
-use std::{cell::{Cell, RefCell}, net::Ipv4Addr, rc::Rc, str::FromStr};
+use std::{cell::{Cell, RefCell}, net::Ipv4Addr, path::PathBuf, rc::Rc, str::FromStr};
 
-use glib::{Object, Sender, Type, clone};
+use fragile::Fragile;
+use glib::{MainContext, Object, Sender, Type, clone};
 
+use gstreamer as gst;
+use gst::{Pipeline, prelude::*};
 use gtk4 as gtk;
-use gtk::{AboutDialog, Align, ApplicationWindow, Box as GtkBox, Button, CenterBox, Dialog, DialogFlags, Entry, Frame, Grid, Image, Inhibit, Label, MenuButton, Orientation, ResponseType, SpinButton, Stack, StringList, gio::{Menu, MenuItem}, prelude::*};
+use gtk::{AboutDialog, Align, ApplicationWindow, Box as GtkBox, Button, CenterBox, Dialog, DialogFlags, Entry, Frame, Grid, Image, Inhibit, Label, MenuButton, Orientation, ResponseType, SpinButton, Stack, StringList, gdk_pixbuf::Pixbuf, gio::{Menu, MenuItem}, prelude::*};
 
 use adw::{ActionRow, ComboRow, HeaderBar, PreferencesGroup, PreferencesPage, PreferencesWindow, StatusPage, Window, prelude::*};
 
@@ -13,27 +16,37 @@ use relm4_macros::widget;
 use strum::IntoEnumIterator;
 use strum_macros::{EnumIter, EnumString as EnumFromString, Display as EnumToString};
 
-use crate::{AppModel, preferences::{PreferencesMsg, PreferencesModel}};
+use lazy_static::lazy_static;
+
+use crate::{AppModel, preferences::{PreferencesMsg, PreferencesModel}, video::{self, MatExt}};
 use crate::AppMsg;
 use crate::prelude::ObjectExt;
 
 use derivative::*;
+
+lazy_static! {
+    pub static ref COMPONENTS: Fragile<RefCell<Vec<SlaveComponents>>> = Fragile::new(RefCell::new(Vec::new()));
+}
 
 #[tracker::track(pub)]
 #[derive(Debug, Derivative, PartialEq)]
 #[derivative(Default)]
 pub struct SlaveModel {
     pub index: usize, 
-    pub config: SlaveConfigModel, 
+    pub config: Rc<RefCell<SlaveConfigModel>>,
+    #[derivative(Default(value="Some(false)"))]
     pub connected: Option<bool>,
+    #[derivative(Default(value="Some(false)"))]
     pub polling: Option<bool>,
+    pub preferences: Rc<RefCell<PreferencesModel>>,
 }
 
 impl SlaveModel {
-    pub fn new(index: usize, config: SlaveConfigModel) -> Self {
+    pub fn new(index: usize, config: SlaveConfigModel, preferences: Rc<RefCell<PreferencesModel>>) -> Self {
         Self {
             index, 
-            config,
+            config: Rc::new(RefCell::new(config)),
+            preferences,
             ..Default::default()
         }
     }
@@ -47,6 +60,7 @@ pub enum VideoAlgorithm {
 impl Widgets<SlaveModel, ()> for SlaveWidgets {
     view! {
         vbox = GtkBox {
+            put_data: args!("sender", sender.clone()),
             set_orientation: Orientation::Vertical,
             set_margin_start: 1,
             set_margin_end: 1, 
@@ -58,15 +72,24 @@ impl Widgets<SlaveModel, ()> for SlaveWidgets {
                     set_halign: Align::Start,
                     set_spacing: 1,
                     append = &Button {
-                        set_icon_name: "network-transmit-symbolic",
+                        set_icon_name?: watch!(model.connected.map(|x| if x { "network-offline-symbolic" } else { "network-transmit-symbolic" })),
+                        set_sensitive: track!(model.changed(SlaveModel::connected()), model.connected !=None),
                         set_css_classes: &["circular"],
                         set_tooltip_text: Some("连接/断开连接"),
-                        
+                        put_data: args!("index", model.index),
+                        connect_clicked(sender) => move |button| {
+                            send!(sender, SlaveMsg::SlaveToggleConnect(*button.get_data("index").unwrap()));
+                        },
                     },
                     append = &Button {
-                        set_icon_name: "media-playback-start-symbolic",
+                        set_icon_name?: watch!(model.polling.map(|x| if x { "media-playback-pause-symbolic" } else { "media-playback-start-symbolic" })),
+                        set_sensitive: track!(model.changed(SlaveModel::polling()), model.polling !=None),
                         set_css_classes: &["circular"],
                         set_tooltip_text: Some("启动/停止视频"),
+                        put_data: args!("index", model.index),
+                        connect_clicked(sender) => move |button| {
+                            send!(sender, SlaveMsg::SlaveTogglePolling(*button.get_data("index").unwrap()));
+                        }
                     },
                 },
                 set_center_widget = Some(&GtkBox) {
@@ -74,7 +97,7 @@ impl Widgets<SlaveModel, ()> for SlaveWidgets {
                     set_halign: Align::Center,
                     set_spacing: 1,
                     append = &Label {
-                        set_text: track!(model.changed(SlaveModel::config()), format!("{}:{}", model.config.ip, model.config.port).as_str()),
+                        set_text: track!(model.changed(SlaveModel::config()), format!("{}:{}", model.config.borrow().get_ip(), model.config.borrow().get_port()).as_str()),
                     },
                 },
                 set_end_widget = Some(&GtkBox) {
@@ -85,26 +108,15 @@ impl Widgets<SlaveModel, ()> for SlaveWidgets {
                         set_icon_name: "emblem-system-symbolic",
                         set_css_classes: &["circular"],
                         set_tooltip_text: Some("机位设置"),
-                        put_data: args!("index", model.index),
+                        put_data: args!("sender", components.config.sender().clone()),
                         connect_clicked(sender) => move |button| {
-                            if let Some(&index) = button.get_data("index") {
-                                send!(sender, SlaveMsg::DisplaySlaveConfigWindow(index));
-                            }
+                            let sender = button.get_data::<Sender<SlaveConfigMsg>>("sender").unwrap().clone();
+                            send!(sender, SlaveConfigMsg::SetWindowPresented(true));
                         },
                     },
                 },
             },
-            append = &Frame {
-                set_child = Some(&Stack) {
-                    set_vexpand: true,
-                    set_hexpand: true,
-                    add_child = &StatusPage {
-                        set_icon_name: Some("help-browser-symbolic"),
-                        set_title: "无信号",
-                        set_description: Some("请点击上方按钮启动视频拉流"),
-                    },
-                },
-            },
+            append: components.video.root_widget(),
         }
     }
 }
@@ -135,7 +147,10 @@ impl FactoryPrototype for SlaveModel {
         index: &usize,
         sender: Sender<SlaveMsg>,
     ) -> SlaveWidgets {
-        Widgets::init_view(self, &SlaveComponents::init_components(self, sender.clone()) , sender.clone())
+        let components = SlaveComponents::init_components(self, sender.clone());
+        let widgets = Widgets::init_view(self, &components, sender.clone());
+        COMPONENTS.get().borrow_mut().push(components);
+        widgets
     }
 
     fn position(
@@ -157,41 +172,43 @@ impl FactoryPrototype for SlaveModel {
         &self,
         index: &usize,
         widgets: &SlaveWidgets,
-    ) {}
+    ) {
+        SlaveWidgets::view(unsafe {
+            let const_ptr = widgets as *const SlaveWidgets;
+            let mut_ptr = const_ptr as *mut SlaveWidgets;
+            &mut *mut_ptr
+        }, self, widgets.vbox.get_data::<Sender<SlaveMsg>>("sender").unwrap().clone());
+        
+        if let Some(components) = COMPONENTS.get().borrow().get(*index) {
+            components.config.send(SlaveConfigMsg::Dummy).unwrap();
+            components.video.send(SlaveVideoMsg::Dummy).unwrap()
+        }
+    }
 
     fn get_root(widgets: &SlaveWidgets) -> &GtkBox {
         &widgets.vbox
     }
 }
 
-impl Components<SlaveModel> for SlaveConfigModel {
-    fn init_components(parent_model: &SlaveModel, parent_sender: Sender<SlaveMsg>)
-        -> Self {
-        todo!()
-    }
-
-    fn connect_parent(&mut self, _parent_widgets: &SlaveWidgets) {
-        todo!()
-    }
-}
-
 #[tracker::track(pub)]
-#[derive(Debug, Derivative, PartialEq)]
+#[derive(Debug, Derivative, PartialEq, Clone)]
 #[derivative(Default)]
 pub struct SlaveConfigModel {
+    index: usize,
     pub window_presented: bool,
     #[derivative(Default(value="PreferencesModel::default().default_slave_ipv4_address"))]
     pub ip: Ipv4Addr,
     #[derivative(Default(value="PreferencesModel::default().default_slave_port"))]
     pub port: u16,
+    #[derivative(Default(value="5600"))]
     pub video_port: u16,
     pub video_algorithms: Vec<VideoAlgorithm>,
 }
 
 impl SlaveConfigModel {
-    pub fn new(ip: Ipv4Addr, port: u16) -> Self {
+    pub fn new(index: usize, ip: Ipv4Addr, port: u16, video_port: u16) -> Self {
         Self {
-            ip, port,
+            index, ip, port, video_port,
             ..Default::default()
         }
     }
@@ -204,6 +221,7 @@ impl Model for SlaveConfigModel {
 }
 
 pub enum SlaveConfigMsg {
+    Dummy, 
     SetIp(Ipv4Addr),
     SetPort(u16),
     SetVideoPort(u16),
@@ -216,11 +234,11 @@ impl Widgets<SlaveConfigModel, SlaveModel> for SlaveConfigWidgets {
         window = PreferencesWindow {
             set_title: Some("机位选项"),
             set_modal: true,
-            set_visible: true,//true,//track!(model.changed(SlaveConfigModel::window_presented()), model.window_presented),
+            set_visible: watch!(model.window_presented), //track!(model.changed(SlaveConfigModel::window_presented()), model.window_presented),
             set_can_swipe_back: true,
             add = &PreferencesPage {
                 set_title: "视频",
-                set_icon_name: Some("view-grid-symbolic"),
+                set_icon_name: Some("emblem-videos-symbolic"),
                 add = &PreferencesGroup {
                     set_title: "画面",
                     set_description: Some("上位机端对画面进行的处理选项"),
@@ -257,7 +275,7 @@ impl Widgets<SlaveConfigModel, SlaveModel> for SlaveConfigWidgets {
             },
             add = &PreferencesPage {
                 set_title: "连接",
-                set_icon_name: Some("view-grid-symbolic"),
+                set_icon_name: Some("network-transmit-receive-symbolic"),
                 add = &PreferencesGroup {
                     set_title: "通讯",
                     set_description: Some("设置下位机的通讯选项"),
@@ -299,9 +317,7 @@ impl Widgets<SlaveConfigModel, SlaveModel> for SlaveConfigWidgets {
 
 impl ComponentUpdate<SlaveModel> for SlaveConfigModel {
     fn init_model(parent_model: &SlaveModel) -> Self {
-        Self {
-            ..Default::default()
-        }
+        parent_model.config.borrow().clone()
     }
 
     fn update(
@@ -311,27 +327,160 @@ impl ComponentUpdate<SlaveModel> for SlaveConfigModel {
         sender: Sender<SlaveConfigMsg>,
         parent_sender: Sender<SlaveMsg>,
     ) {
+        let mut config_updated = true;
         match msg {
             SlaveConfigMsg::SetIp(ip) => self.ip = ip,
             SlaveConfigMsg::SetPort(port) => self.port = port,
             SlaveConfigMsg::SetVideoPort(port) => self.video_port = port,
-            SlaveConfigMsg::SetWindowPresented(presented) => self.window_presented = presented,
+            SlaveConfigMsg::SetWindowPresented(presented) =>self.window_presented = presented,
+            SlaveConfigMsg::Dummy =>config_updated = false,
+        }
+        if config_updated {
+            send!(parent_sender, SlaveMsg::SlaveConfigUpdated(self.index, self.clone()));
+        }
+    }
+}
+
+#[tracker::track(pub)]
+#[derive(Debug, Derivative, PartialEq)]
+#[derivative(Default)]
+pub struct SlaveVideoModel {
+    index: usize, 
+    #[no_eq]
+    pub pixbuf: Option<Pixbuf>,
+    #[no_eq]
+    pub pipeline: Option<Pipeline>,
+    pub config: Rc<RefCell<SlaveConfigModel>>,
+    pub record_handle: Option<(gst::Pad, Vec<gst::Element>)>,
+    pub preferences: Rc<RefCell<PreferencesModel>>, 
+}
+
+pub enum SlaveVideoMsg {
+    Dummy,
+    SetPipeline(Option<Pipeline>),
+    SetPixbuf(Option<Pixbuf>),
+    SetRecording(bool),
+}
+
+impl Model for SlaveVideoModel {
+    type Msg = SlaveVideoMsg;
+    type Widgets = SlaveVideoWidgets;
+    type Components = ();
+}
+
+#[widget(pub)]
+impl Widgets<SlaveVideoModel, SlaveModel> for SlaveVideoWidgets {
+    view! {
+        frame = Frame {
+            set_child = Some(&Stack) {
+                set_vexpand: true,
+                set_hexpand: true,
+                add_child = &StatusPage {
+                    set_icon_name: Some("help-browser-symbolic"),
+                    set_title: "无信号",
+                    set_description: Some("请点击上方按钮启动视频拉流"),
+                    set_visible: track!(model.changed(SlaveVideoModel::pixbuf()), model.pixbuf == None),
+                },
+                add_child = &Image {
+                    set_hexpand: true,
+                    set_vexpand: true,
+                    set_from_pixbuf: track!(model.changed(SlaveVideoModel::pixbuf()), match &model.pixbuf {
+                        Some(pixbuf) =>Some(&pixbuf),
+                        None => None,
+                    }),
+                },
+            },
+        }
+    }
+}
+
+impl ComponentUpdate<SlaveModel> for SlaveVideoModel {
+    fn init_model(parent_model: &SlaveModel) -> Self {
+        Self {
+            index: *parent_model.get_index(),
+            config: parent_model.get_config().clone(),
+            preferences: parent_model.get_preferences().clone(),
+            ..Default::default()
+        }
+    }
+
+    fn update(
+        &mut self,
+        msg: SlaveVideoMsg,
+        components: &(),
+        sender: Sender<SlaveVideoMsg>,
+        parent_sender: Sender<SlaveMsg>,
+    ) {
+        match msg {
+            SlaveVideoMsg::SetPipeline(pipeline) => {
+                match pipeline {
+                    Some(pipeline) => {
+                        if self.pipeline == None {
+                            let sender = sender.clone();
+                            let (mat_sender, mat_receiver) = MainContext::channel(glib::PRIORITY_DEFAULT);
+                            video::attach_pipeline_callback(&pipeline, mat_sender).unwrap();
+                            mat_receiver.attach(None, move |mat| {
+                                sender.send(SlaveVideoMsg::SetPixbuf(Some(mat.as_pixbuf()))).unwrap();
+                                Continue(true)
+                            });
+                            pipeline.set_state(gst::State::Playing);
+                            self.pipeline = Some(pipeline);
+                            
+                        }
+                    },
+                    None => {
+                        if let Some(pipeline) = &self.pipeline {
+                            pipeline.set_state(gst::State::Null);
+                            self.pipeline = None;
+                        }
+                    },
+                }
+            },
+            SlaveVideoMsg::Dummy => (),
+            SlaveVideoMsg::SetPixbuf(pixbuf) => self.set_pixbuf(pixbuf),
+            SlaveVideoMsg::SetRecording(recording) => {
+                dbg!(recording);
+                match &self.pipeline {
+                    Some(pipeline) => {
+                        if recording {
+                            let mut pathbuf = PathBuf::from_str(self.preferences.borrow().get_video_save_path()).unwrap();
+                            pathbuf.push(format!("{}.mkv", self.index + 1));
+                            println!("{}", pathbuf.to_str().unwrap());
+                            let elements = video::create_queue_to_file(pathbuf.to_str().unwrap()).unwrap();
+                            let pad = video::connect_elements_to_pipeline(pipeline, &elements).unwrap();
+                            pipeline.set_state(gst::State::Playing).unwrap(); // 添加元素后会自动暂停，需要手动重新开始播放
+                            self.record_handle = Some((pad, Vec::from(elements)));
+                        } else {
+                            match &self.record_handle {
+                                Some((teepad, elements)) => {
+                                    video::disconnect_elements_to_pipeline(pipeline, teepad, elements).unwrap();
+                                },
+                                None => {},
+                            }
+                        }
+                    },
+                    None => {},
+                }
+            },
         }
     }
 }
 
 pub struct SlaveComponents {
-    config: RelmComponent<SlaveConfigModel, SlaveModel>, 
+    pub config: RelmComponent<SlaveConfigModel, SlaveModel>,
+    pub video: RelmComponent<SlaveVideoModel, SlaveModel>,
 }
 
 impl Components<SlaveModel> for SlaveComponents {
     fn init_components(parent_model: &SlaveModel, parent_sender: Sender<SlaveMsg>)  -> Self {
         Self {
             config: RelmComponent::new(parent_model, parent_sender.clone()),
+            video: RelmComponent::new(parent_model, parent_sender.clone()),
         }
     }
 
     fn connect_parent(&mut self, _parent_widgets: &SlaveWidgets) {
         self.config.connect_parent(_parent_widgets);
+        self.video.connect_parent(_parent_widgets);
     }
 }

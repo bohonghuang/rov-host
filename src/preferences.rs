@@ -17,7 +17,7 @@ use crate::{AppModel, AppMsg};
 
 use derivative::*;
 
-#[derive(EnumIter, EnumToString, EnumFromString, PartialEq, Clone)]
+#[derive(EnumIter, EnumToString, EnumFromString, PartialEq, Clone, Debug)]
 pub enum VideoEncoder {
     Copy, H264, H265, WEBM
 }
@@ -46,7 +46,7 @@ fn get_video_path() -> PathBuf {
 }
 
 #[tracker::track]
-#[derive(Derivative, Clone)]
+#[derive(Derivative, Clone, PartialEq, Debug)]
 #[derivative(Default)]
 pub struct PreferencesModel {
     #[derivative(Default(value="0"))]
@@ -195,7 +195,7 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
 
 impl ComponentUpdate<AppModel> for PreferencesModel {
     fn init_model(parent_model: &AppModel) -> Self {
-        parent_model.preferences.clone()
+        parent_model.preferences.borrow().clone()
     }
     fn update(
         &mut self,
