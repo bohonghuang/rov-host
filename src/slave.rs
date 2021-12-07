@@ -6,11 +6,11 @@ use glib::{MainContext, Object, Sender, Type, clone};
 use gstreamer as gst;
 use gst::{Pipeline, prelude::*};
 use gtk4 as gtk;
-use gtk::{AboutDialog, Align, ApplicationWindow, Box as GtkBox, Button, CenterBox, Dialog, DialogFlags, Entry, Frame, Grid, Image, Inhibit, Label, MenuButton, Orientation, ResponseType, SpinButton, Stack, StringList, gdk_pixbuf::Pixbuf, gio::{Menu, MenuItem}, prelude::*};
+use gtk::{AboutDialog, Align, ApplicationWindow, Box as GtkBox, Button, CenterBox, Dialog, DialogFlags, Entry, Frame, Grid, Image, Inhibit, Label, MenuButton, Orientation, ResponseType, Revealer, RevealerTransitionType, ScrolledWindow, Separator, SpinButton, Stack, StringList, ToggleButton, Viewport, gdk_pixbuf::Pixbuf, gio::{Menu, MenuItem}, prelude::*};
 
 use adw::{ActionRow, ComboRow, HeaderBar, PreferencesGroup, PreferencesPage, PreferencesWindow, StatusPage, Window, prelude::*};
 
-use relm4::{AppUpdate, ComponentUpdate, Components, Model, RelmApp, RelmComponent, Widgets, actions::{ActionGroupName, ActionName, RelmAction, RelmActionGroup}, factory::{DynamicIndex, FactoryPrototype, FactoryVec, FactoryVecDeque, positions::GridPosition}, new_action_group, new_statful_action, new_statless_action, send};
+use relm4::{AppUpdate, WidgetPlus, ComponentUpdate, Components, Model, RelmApp, RelmComponent, Widgets, actions::{ActionGroupName, ActionName, RelmAction, RelmActionGroup}, factory::{DynamicIndex, FactoryPrototype, FactoryVec, FactoryVecDeque, positions::GridPosition}, new_action_group, new_statful_action, new_statless_action, send};
 use relm4_macros::widget;
 
 use strum::IntoEnumIterator;
@@ -32,12 +32,14 @@ lazy_static! {
 #[derive(Debug, Derivative, PartialEq)]
 #[derivative(Default)]
 pub struct SlaveModel {
-    pub index: usize, 
+    pub index: usize,
+    #[no_eq]
     pub config: Rc<RefCell<SlaveConfigModel>>,
     #[derivative(Default(value="Some(false)"))]
     pub connected: Option<bool>,
     #[derivative(Default(value="Some(false)"))]
     pub polling: Option<bool>,
+    #[no_eq]
     pub preferences: Rc<RefCell<PreferencesModel>>,
 }
 
@@ -62,8 +64,6 @@ impl Widgets<SlaveModel, ()> for SlaveWidgets {
         vbox = GtkBox {
             put_data: args!("sender", sender.clone()),
             set_orientation: Orientation::Vertical,
-            set_margin_start: 1,
-            set_margin_end: 1, 
             append = &CenterBox {
                 set_css_classes: &["toolbar"],
                 set_orientation: Orientation::Horizontal,
@@ -104,19 +104,23 @@ impl Widgets<SlaveModel, ()> for SlaveWidgets {
                     set_hexpand: true,
                     set_halign: Align::End,
                     set_spacing: 1,
-                    append = &Button {
+                    append = &ToggleButton {
                         set_icon_name: "emblem-system-symbolic",
                         set_css_classes: &["circular"],
                         set_tooltip_text: Some("机位设置"),
                         put_data: args!("sender", components.config.sender().clone()),
                         connect_clicked(sender) => move |button| {
                             let sender = button.get_data::<Sender<SlaveConfigMsg>>("sender").unwrap().clone();
-                            send!(sender, SlaveConfigMsg::SetWindowPresented(true));
+                            send!(sender, SlaveConfigMsg::TogglePresented);
                         },
                     },
                 },
             },
-            append: components.video.root_widget(),
+            append = &GtkBox {
+                set_orientation: Orientation::Horizontal,
+                append: components.video.root_widget(),
+                append: components.config.root_widget(),
+            },
         }
     }
 }
@@ -195,7 +199,7 @@ impl FactoryPrototype for SlaveModel {
 #[derivative(Default)]
 pub struct SlaveConfigModel {
     index: usize,
-    pub window_presented: bool,
+    pub presented: bool,
     #[derivative(Default(value="PreferencesModel::default().default_slave_ipv4_address"))]
     pub ip: Ipv4Addr,
     #[derivative(Default(value="PreferencesModel::default().default_slave_port"))]
@@ -225,92 +229,101 @@ pub enum SlaveConfigMsg {
     SetIp(Ipv4Addr),
     SetPort(u16),
     SetVideoPort(u16),
-    SetWindowPresented(bool),
+    TogglePresented,
 }
 
 #[widget(pub)]
 impl Widgets<SlaveConfigModel, SlaveModel> for SlaveConfigWidgets {
     view! {
-        window = PreferencesWindow {
-            set_title: Some("机位选项"),
-            set_modal: true,
-            set_visible: watch!(model.window_presented), //track!(model.changed(SlaveConfigModel::window_presented()), model.window_presented),
-            set_can_swipe_back: true,
-            add = &PreferencesPage {
-                set_title: "视频",
-                set_icon_name: Some("emblem-videos-symbolic"),
-                add = &PreferencesGroup {
-                    set_title: "画面",
-                    set_description: Some("上位机端对画面进行的处理选项"),
-                    add = &ComboRow {
-                        set_title: "增强算法",
-                        set_subtitle: "对画面使用的增强算法",
-                        set_model: Some(&{
-                            let model = StringList::new(&[]);
-                            model.append("无");
-                            for value in VideoAlgorithm::iter() {
-                                model.append(&value.to_string());
-                            }
-                            model
-                        }),
-                        set_selected: track!(model.changed(PreferencesModel::video_encoder()), VideoAlgorithm::iter().position(|x| model.video_algorithms.first().map_or_else(|| false, |y| *y == x)).map_or_else(|| 0, |x| x + 1) as u32),
-                        connect_activated(sender) => move |row| {
-                            
-                        }
-                    }
+        window = Revealer {
+            set_reveal_child: watch!(model.presented), //track!(model.changed(SlaveConfigModel::window_presented()), model.window_presented),
+            set_transition_type: RevealerTransitionType::SlideLeft,
+            set_child = Some(&GtkBox) {
+                set_orientation: Orientation::Horizontal,
+                append = &Separator {
+                    set_orientation: Orientation::Horizontal,
                 },
-                add = &PreferencesGroup {
-                    set_title: "拉流",
-                    set_description: Some("从下位机拉取视频流的选项"),
-                    add = &ActionRow {
-                        set_title: "端口",
-                        set_subtitle: "从指定本地端口拉取视频流",
-                        add_suffix = &SpinButton::with_range(0.0, 65535.0, 1.0) {
-                            set_value: track!(model.changed(SlaveConfigModel::video_port()), model.video_port as f64),
-                            set_digits: 0,
-                            set_valign: Align::Center,
-                        }
-                    }
-                }
-            },
-            add = &PreferencesPage {
-                set_title: "连接",
-                set_icon_name: Some("network-transmit-receive-symbolic"),
-                add = &PreferencesGroup {
-                    set_title: "通讯",
-                    set_description: Some("设置下位机的通讯选项"),
-                    add = &ActionRow {
-                        set_title: "地址",
-                        set_subtitle: "下位机的内网地址",
-                        add_suffix = &Entry {
-                            set_text: track!(model.changed(SlaveConfigModel::ip()), model.ip.to_string().as_str()),
-                            set_valign: Align::Center,
-                            connect_changed(sender) => move |entry| {
-                                match Ipv4Addr::from_str(&entry.text()) {
-                                    Ok(addr) => send!(sender, SlaveConfigMsg::SetIp(addr)),
-                                    Err(_) => (),
+                append = &ScrolledWindow {
+                    set_width_request: 300,
+                    set_child = Some(&Viewport) {
+                        set_child = Some(&GtkBox) {
+                            set_spacing: 20,
+                            set_margin_all: 10,
+                            set_orientation: Orientation::Vertical,
+                            append = &PreferencesGroup {
+                                set_title: "通讯",
+                                set_description: Some("设置下位机的通讯选项"),
+                                add = &ActionRow {
+                                    set_title: "地址",
+                                    set_subtitle: "下位机的内网地址",
+                                    add_suffix = &Entry {
+                                        set_text: track!(model.changed(SlaveConfigModel::ip()), model.ip.to_string().as_str()),
+                                        set_valign: Align::Center,
+                                        connect_changed(sender) => move |entry| {
+                                            match Ipv4Addr::from_str(&entry.text()) {
+                                                Ok(addr) => send!(sender, SlaveConfigMsg::SetIp(addr)),
+                                                Err(_) => (),
+                                            }
+                                        }
+                                    },
+                                },
+                                add = &ActionRow {
+                                    set_title: "端口",
+                                    set_subtitle: "下位机的通讯端口",
+                                    add_suffix = &SpinButton::with_range(0.0, 65535.0, 1.0) {
+                                        set_value: track!(model.changed(SlaveConfigModel::port()), model.port as f64),
+                                        set_digits: 0,
+                                        set_valign: Align::Center,
+                                        connect_changed(sender) => move |button| {
+                                            send!(sender, SlaveConfigMsg::SetPort(button.value() as u16));
+                                        }
+                                    },
+                                },
+                            },
+                            append = &PreferencesGroup {
+                                set_title: "画面",
+                                set_description: Some("上位机端对画面进行的处理选项"),
+                                add = &ComboRow {
+                                    set_title: "增强算法",
+                                    set_subtitle: "对画面使用的增强算法",
+                                    set_model: Some(&{
+                                        let model = StringList::new(&[]);
+                                        model.append("无");
+                                        for value in VideoAlgorithm::iter() {
+                                            model.append(&value.to_string());
+                                        }
+                                        model
+                                    }),
+                                    set_selected: track!(model.changed(PreferencesModel::video_encoder()), VideoAlgorithm::iter().position(|x| model.video_algorithms.first().map_or_else(|| false, |y| *y == x)).map_or_else(|| 0, |x| x + 1) as u32),
+                                    connect_activated(sender) => move |row| {
+                                        
+                                    }
                                 }
-                            }
-                         },
-                    },
-                    add = &ActionRow {
-                        set_title: "端口",
-                        set_subtitle: "连接到下位机的指定端口",
-                        add_suffix = &SpinButton::with_range(0.0, 65535.0, 1.0) {
-                            set_value: track!(model.changed(SlaveConfigModel::port()), model.port as f64),
-                            set_digits: 0,
-                            set_valign: Align::Center,
-                            connect_changed(sender) => move |button| {
-                                send!(sender, SlaveConfigMsg::SetPort(button.value() as u16));
-                            }
+                            },
+                            append = &PreferencesGroup {
+                                set_title: "拉流",
+                                set_description: Some("从下位机拉取视频流的选项"),
+                                add = &ActionRow {
+                                    set_title: "端口",
+                                    set_subtitle: "拉取视频流的本地端口",
+                                    add_suffix = &SpinButton::with_range(0.0, 65535.0, 1.0) {
+                                        set_value: track!(model.changed(SlaveConfigModel::video_port()), model.video_port as f64),
+                                        set_digits: 0,
+                                        set_valign: Align::Center,
+                                        connect_changed(sender) => move |button| {
+                                            send!(sender, SlaveConfigMsg::SetVideoPort(button.value() as u16));
+                                        }
+                                    }
+                                }
+                            },
                         },
                     },
                 },
             },
-            connect_close_request(sender) => move |window| {
-                send!(sender, SlaveConfigMsg::SetWindowPresented(false));
-                Inhibit(false)
-            }
+            // connect_close_request(sender) => move |window| {
+            //     send!(sender, SlaveConfigMsg::SetWindowPresented(false));
+            //     Inhibit(false)
+            // },
         }
     }
 }
@@ -329,11 +342,11 @@ impl ComponentUpdate<SlaveModel> for SlaveConfigModel {
     ) {
         let mut config_updated = true;
         match msg {
-            SlaveConfigMsg::SetIp(ip) => self.ip = ip,
-            SlaveConfigMsg::SetPort(port) => self.port = port,
-            SlaveConfigMsg::SetVideoPort(port) => self.video_port = port,
-            SlaveConfigMsg::SetWindowPresented(presented) =>self.window_presented = presented,
-            SlaveConfigMsg::Dummy =>config_updated = false,
+            SlaveConfigMsg::SetIp(ip) => self.set_ip(ip),
+            SlaveConfigMsg::SetPort(port) => self.set_port(port),
+            SlaveConfigMsg::SetVideoPort(port) => self.set_video_port(port),
+            SlaveConfigMsg::TogglePresented =>self.set_presented(!self.get_presented()),
+            SlaveConfigMsg::Dummy => config_updated = false,
         }
         if config_updated {
             send!(parent_sender, SlaveMsg::SlaveConfigUpdated(self.index, self.clone()));
@@ -371,8 +384,8 @@ impl Model for SlaveVideoModel {
 #[widget(pub)]
 impl Widgets<SlaveVideoModel, SlaveModel> for SlaveVideoWidgets {
     view! {
-        frame = Frame {
-            set_child = Some(&Stack) {
+        frame = GtkBox {
+            append = &Stack {
                 set_vexpand: true,
                 set_hexpand: true,
                 add_child = &StatusPage {

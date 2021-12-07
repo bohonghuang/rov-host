@@ -55,7 +55,7 @@ impl Widgets<HeaderModel, AppModel> for HeaderWidgets {
                         set_label?: watch!(model.recording.map(|x| if x { "停止" } else { "录制" })),
                     },
                 },
-                set_sensitive: watch!(model.recording != None),
+                set_visible: watch!(model.recording != None),
                 connect_clicked(sender) => move |button| {
                     send!(sender, HeaderMsg::ToggleRecord);
                 }
@@ -267,7 +267,7 @@ impl AppUpdate for AppModel {
                 ip_octets[3] = ip_octets[3].wrapping_add(index);
                 let video_port = self.get_preferences().borrow().get_default_local_video_port().wrapping_add(index as u16);
                 self.slaves.push(SlaveModel::new(index as usize, SlaveConfigModel::new(index as usize, Ipv4Addr::from(ip_octets), *self.get_preferences().clone().borrow().get_default_slave_port(), video_port), self.get_preferences().clone()));
-                components.header.send(HeaderMsg::SetRecording(Some(false)));
+                components.header.send(HeaderMsg::SetRecording(Some(false))).unwrap();
             },
             AppMsg::PreferencesUpdated(preferences) => {
                 *self.get_preferences().borrow_mut() = preferences;
@@ -309,20 +309,11 @@ impl AppUpdate for AppModel {
 }
 
 fn main() {
-    gst::init();
+    gst::init().expect("无法初始化 GStreamer");
     gtk::init().map(|_| adw::init()).expect("无法初始化 GTK4");
     let model = AppModel {
         ..Default::default()
     };
-    // let model = components::AppModel {
-    //     mode: components::AppMode
-    // };
-    // let btn = Button::new();
-    // unsafe {
-    //     btn.set_data("aaaa", "Hello");
-    //     let a: &str = *btn.data("aaaa").unwrap().as_ref();
-    //     println!("{}", a);
-    // };
     let relm = RelmApp::new(model);
     relm.run()
 }
