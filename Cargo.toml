@@ -6,7 +6,6 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-gtk4 = "0.3.1"
 relm4 = "0.4.0-beta.2"
 relm4-components = "0.4.0-beta.2"
 relm4-macros = "0.4.0-beta.2"
@@ -31,3 +30,8 @@ lazy_static = "1.4.0"
 [dependencies.adw]
 package = "libadwaita"
 version = "0.1.0-alpha-6"
+
+[dependencies.gtk]
+package = "gtk4"
+version = "0.3.1"
+features = ["v4_4"]

@@ -10,14 +10,14 @@ use std::time::Duration;
 
 use fragile::Fragile;
 
-use gtk4::gdk::Display;
-use gtk4::gio::{Action, Icon, Menu, MenuItem, SimpleAction};
+use gtk::gdk::Display;
+use gtk::gio::{Action, Icon, Menu, MenuItem, SimpleAction};
 use opencv::{highgui, prelude::*, videoio, Result, imgproc, imgcodecs, core::Size};
 
-use gtk4::{AboutDialog, Align, HeaderBar, IconLookupFlags, IconTheme, Label, MenuButton, PageSetupUnixDialogBuilder, ToggleButton, show_about_dialog};
-use gtk4::gdk_pixbuf::{Colorspace, Pixbuf};
-use gtk4::{Orientation, prelude::*};
-use gtk4::{Application, ApplicationWindow, Button, Box as GtkBox, Image};
+use gtk::{AboutDialog, Align, HeaderBar, IconLookupFlags, IconTheme, Label, MenuButton, PageSetupUnixDialogBuilder, ToggleButton, show_about_dialog};
+use gtk::gdk_pixbuf::{Colorspace, Pixbuf};
+use gtk::{Orientation, prelude::*};
+use gtk::{Application, ApplicationWindow, Button, Box as GtkBox, Image};
 
 use glib::{Error, Continue, MainContext, PRIORITY_DEFAULT, Sender, clone};
 

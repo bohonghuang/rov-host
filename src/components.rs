@@ -1,4 +1,3 @@
-use gtk4 as gtk;
 use gtk::prelude::{BoxExt, ButtonExt, DialogExt, GtkWindowExt, ToggleButtonExt, WidgetExt};
 use relm4::{send, AppUpdate, ComponentUpdate, Model, RelmApp, RelmComponent, Sender, Widgets};
 

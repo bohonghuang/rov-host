@@ -2,7 +2,6 @@ use std::{fs, net::Ipv4Addr, path::PathBuf, str::FromStr};
 
 use glib::{Sender, clone};
 
-use gtk4 as gtk;
 use gtk::{Adjustment, Align, ApplicationWindow, Box as GtkBox, Button, Dialog, Entry, FileChooser, FileChooserDialog, Inhibit, Label, ListBox, ListBoxRow, MapListModel, Orientation, ResponseType, ScrolledWindow, SelectionModel, SpinButton, StringList, Switch, Viewport, Window, prelude::*};
 
 use adw::{ActionRow, ComboRow, ComboRowBuilder, EnumListModel, PreferencesGroup, PreferencesPage, PreferencesWindow, prelude::*};
@@ -84,9 +83,13 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
         window = PreferencesWindow {
             set_title: Some("首选项"),
             set_transient_for: parent!(Some(&parent_widgets.app_window)),
+            set_destroy_with_parent: true,
             set_modal: true,
-            set_visible: true,
             set_can_swipe_back: true,
+            connect_close_request(sender) => move |window| {
+                window.hide();
+                Inhibit(true)
+            },
             add = &PreferencesPage {
                 set_title: "通用",
                 set_icon_name: Some("view-grid-symbolic"),

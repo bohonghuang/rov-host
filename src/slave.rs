@@ -1,12 +1,11 @@
 use std::{cell::{Cell, RefCell}, net::Ipv4Addr, path::PathBuf, rc::Rc, str::FromStr};
 
 use fragile::Fragile;
-use glib::{MainContext, Object, Sender, Type, clone};
+use glib::{MainContext, Object, PRIORITY_DEFAULT, Sender, Type, clone};
 
 use gstreamer as gst;
 use gst::{Pipeline, prelude::*};
-use gtk4 as gtk;
-use gtk::{AboutDialog, Align, ApplicationWindow, Box as GtkBox, Button, CenterBox, Dialog, DialogFlags, Entry, Frame, Grid, Image, Inhibit, Label, MenuButton, Orientation, ResponseType, Revealer, RevealerTransitionType, ScrolledWindow, Separator, SpinButton, Stack, StringList, ToggleButton, Viewport, gdk_pixbuf::Pixbuf, gio::{Menu, MenuItem}, prelude::*};
+use gtk::{AboutDialog, Align, ApplicationWindow, Box as GtkBox, Button, CenterBox, CheckButton, Dialog, DialogFlags, Entry, Frame, Grid, Image, Inhibit, Label, ListBox, MenuButton, Orientation, Popover, ResponseType, Revealer, RevealerTransitionType, ScrolledWindow, SelectionModel, Separator, SingleSelection, SpinButton, Stack, StringList, ToggleButton, Viewport, gdk_pixbuf::Pixbuf, gio::{Menu, MenuItem, MenuModel}, prelude::*};
 
 use adw::{ActionRow, ComboRow, HeaderBar, PreferencesGroup, PreferencesPage, PreferencesWindow, StatusPage, Window, prelude::*};
 
@@ -18,7 +17,7 @@ use strum_macros::{EnumIter, EnumString as EnumFromString, Display as EnumToStri
 
 use lazy_static::lazy_static;
 
-use crate::{AppModel, preferences::{PreferencesMsg, PreferencesModel}, video::{self, MatExt}};
+use crate::{AppModel, input::{InputEvent, InputSource, InputSourceEvent, InputSystem}, preferences::{PreferencesMsg, PreferencesModel}, video::{self, MatExt}};
 use crate::AppMsg;
 use crate::prelude::ObjectExt;
 
@@ -29,7 +28,7 @@ lazy_static! {
 }
 
 #[tracker::track(pub)]
-#[derive(Debug, Derivative, PartialEq)]
+#[derive(Debug, Derivative, Clone)]
 #[derivative(Default)]
 pub struct SlaveModel {
     pub index: usize,
@@ -41,14 +40,27 @@ pub struct SlaveModel {
     pub polling: Option<bool>,
     #[no_eq]
     pub preferences: Rc<RefCell<PreferencesModel>>,
+    pub input_source: Option<InputSource>,
+    #[no_eq]
+    pub input_system: Rc<InputSystem>,
+    #[no_eq]
+    #[derivative(Default(value="Rc::new(MainContext::channel(PRIORITY_DEFAULT).0)"))]
+    pub input_event_sender: Rc<Sender<InputSourceEvent>>,
 }
 
 impl SlaveModel {
-    pub fn new(index: usize, config: SlaveConfigModel, preferences: Rc<RefCell<PreferencesModel>>) -> Self {
+    pub fn new(index: usize, config: SlaveConfigModel, preferences: Rc<RefCell<PreferencesModel>>, input_system: Rc<InputSystem>) -> Self {
+        let (sender, receiver) = MainContext::channel(PRIORITY_DEFAULT);
+        receiver.attach(None, |event| {
+            dbg!(event);
+            Continue(true)
+        });
         Self {
             index, 
             config: Rc::new(RefCell::new(config)),
             preferences,
+            input_system,
+            input_event_sender: Rc::new(sender),
             ..Default::default()
         }
     }
@@ -56,6 +68,30 @@ impl SlaveModel {
 #[derive(EnumIter, EnumToString, EnumFromString, PartialEq, Clone, Debug)]
 pub enum VideoAlgorithm {
     Algorithm1, Algorithm2, Algorithm3, Algorithm4
+}
+
+pub fn input_sources_list_box(index: usize, input_system: &InputSystem, sender: &Sender<SlaveMsg>) -> ListBox {
+    let sources = input_system.get_sources().unwrap();
+    let list_box = ListBox::builder().build();
+    let mut radio_button_group: Option<CheckButton> = None;
+    for (source, name) in sources {
+        let radio_button = CheckButton::builder().label(&name).build();
+        // let action_row = ActionRow::builder().title(&name).activatable_widget(&radio_button).build();
+        // action_row.add_prefix(&radio_button);
+        let sender = sender.clone();
+        radio_button.connect_toggled(move |button| {
+            sender.send(SlaveMsg::SlaveSetInputSource(index, if button.is_active() { Some(source.clone()) } else { None } )).unwrap();
+        });
+        {
+            let radio_button = radio_button.clone();
+            match &radio_button_group {
+                Some(button) => radio_button.set_group(Some(button)),
+                None => radio_button_group = Some(radio_button),
+            }
+        }
+        list_box.append(&radio_button);
+    }
+    list_box
 }
 
 #[widget(pub)]
@@ -91,6 +127,35 @@ impl Widgets<SlaveModel, ()> for SlaveWidgets {
                             send!(sender, SlaveMsg::SlaveTogglePolling(*button.get_data("index").unwrap()));
                         }
                     },
+                    append = &MenuButton {
+                        set_icon_name: "input-gaming-symbolic",
+                        set_css_classes: &["circular"],
+                        set_tooltip_text: Some("切换当前机位使用的输入设备"),
+                        set_popover = Some(&Popover) {
+                            set_child = Some(&GtkBox) {
+                                set_spacing: 5,
+                                set_orientation: Orientation::Vertical, 
+                                append = &CenterBox {
+                                    set_center_widget = Some(&Label) {
+                                        set_text: "输入设备"
+                                    },
+                                    set_end_widget = Some(&Button) {
+                                        set_icon_name: "view-refresh-symbolic",
+                                        set_css_classes: &["circular"],
+                                        set_tooltip_text: Some("刷新输入设备"),
+                                        put_data: args!("index", model.index),
+                                        connect_clicked(sender) => move |button| {
+                                            send!(sender, SlaveMsg::SlaveUpdateInputSources(*button.get_data("index").unwrap()));
+                                        },
+                                    },
+                                },
+                                append = &Frame {
+                                    set_child: track!(model.changed(SlaveModel::input_system()), Some(&input_sources_list_box(model.index, &model.input_system ,&sender))),
+                                },
+                                    
+                            },
+                        },
+                    },
                 },
                 set_center_widget = Some(&GtkBox) {
                     set_hexpand: true,
@@ -109,7 +174,7 @@ impl Widgets<SlaveModel, ()> for SlaveWidgets {
                         set_css_classes: &["circular"],
                         set_tooltip_text: Some("机位设置"),
                         put_data: args!("sender", components.config.sender().clone()),
-                        connect_clicked(sender) => move |button| {
+                        connect_activate(sender) => move |button| {
                             let sender = button.get_data::<Sender<SlaveConfigMsg>>("sender").unwrap().clone();
                             send!(sender, SlaveConfigMsg::TogglePresented);
                         },
@@ -257,7 +322,7 @@ impl Widgets<SlaveConfigModel, SlaveModel> for SlaveConfigWidgets {
                                     set_title: "地址",
                                     set_subtitle: "下位机的内网地址",
                                     add_suffix = &Entry {
-                                        set_text: track!(model.changed(SlaveConfigModel::ip()), model.ip.to_string().as_str()),
+                                        set_text: model.ip.to_string().as_str(), //track!(model.changed(SlaveConfigModel::ip()), model.ip.to_string().as_str()),
                                         set_valign: Align::Center,
                                         connect_changed(sender) => move |entry| {
                                             match Ipv4Addr::from_str(&entry.text()) {
@@ -486,6 +551,7 @@ pub struct SlaveComponents {
 
 impl Components<SlaveModel> for SlaveComponents {
     fn init_components(parent_model: &SlaveModel, parent_sender: Sender<SlaveMsg>)  -> Self {
+        SingleSelection::new(Some(&StringList::new(&[])));
         Self {
             config: RelmComponent::new(parent_model, parent_sender.clone()),
             video: RelmComponent::new(parent_model, parent_sender.clone()),
