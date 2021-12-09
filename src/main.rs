@@ -319,7 +319,7 @@ impl AppUpdate for AppModel {
             },
         }
         for i in 0..self.slaves.len() {
-            self.get_mut_slaves().get_mut(i).unwrap();
+            self.get_mut_slaves().get_mut(i).unwrap().reset();
         }
         true
     }

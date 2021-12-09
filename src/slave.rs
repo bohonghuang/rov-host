@@ -70,7 +70,7 @@ pub enum VideoAlgorithm {
     Algorithm1, Algorithm2, Algorithm3, Algorithm4
 }
 
-pub fn input_sources_list_box(index: usize, input_system: &InputSystem, sender: &Sender<SlaveMsg>) -> ListBox {
+pub fn input_sources_list_box(index: usize, input_source: &Option<InputSource>, input_system: &InputSystem, sender: &Sender<SlaveMsg>) -> ListBox {
     let sources = input_system.get_sources().unwrap();
     let list_box = ListBox::builder().build();
     let mut radio_button_group: Option<CheckButton> = None;
@@ -79,6 +79,11 @@ pub fn input_sources_list_box(index: usize, input_system: &InputSystem, sender: 
         // let action_row = ActionRow::builder().title(&name).activatable_widget(&radio_button).build();
         // action_row.add_prefix(&radio_button);
         let sender = sender.clone();
+        radio_button.set_active(match input_source {
+            Some(current_souce) => current_souce.eq(&source),
+            None => false,
+        });
+        
         radio_button.connect_toggled(move |button| {
             sender.send(SlaveMsg::SlaveSetInputSource(index, if button.is_active() { Some(source.clone()) } else { None } )).unwrap();
         });
@@ -106,7 +111,7 @@ impl Widgets<SlaveModel, ()> for SlaveWidgets {
                 set_start_widget = Some(&GtkBox) {
                     set_hexpand: true,
                     set_halign: Align::Start,
-                    set_spacing: 1,
+                    set_spacing: 5,
                     append = &Button {
                         set_icon_name?: watch!(model.connected.map(|x| if x { "network-offline-symbolic" } else { "network-transmit-symbolic" })),
                         set_sensitive: track!(model.changed(SlaveModel::connected()), model.connected !=None),
@@ -126,6 +131,14 @@ impl Widgets<SlaveModel, ()> for SlaveWidgets {
                         connect_clicked(sender) => move |button| {
                             send!(sender, SlaveMsg::SlaveTogglePolling(*button.get_data("index").unwrap()));
                         }
+                    },
+                },
+                set_center_widget = Some(&GtkBox) {
+                    set_hexpand: true,
+                    set_halign: Align::Center,
+                    set_spacing: 1,
+                    append = &Label {
+                        set_text: track!(model.changed(SlaveModel::config()), format!("{}:{}", model.config.borrow().get_ip(), model.config.borrow().get_port()).as_str()),
                     },
                     append = &MenuButton {
                         set_icon_name: "input-gaming-symbolic",
@@ -150,19 +163,11 @@ impl Widgets<SlaveModel, ()> for SlaveWidgets {
                                     },
                                 },
                                 append = &Frame {
-                                    set_child: track!(model.changed(SlaveModel::input_system()), Some(&input_sources_list_box(model.index, &model.input_system ,&sender))),
+                                    set_child: track!(model.changed(SlaveModel::input_system()), Some(&input_sources_list_box(model.index, &model.input_source, &model.input_system ,&sender))),
                                 },
-                                    
+                                
                             },
                         },
-                    },
-                },
-                set_center_widget = Some(&GtkBox) {
-                    set_hexpand: true,
-                    set_halign: Align::Center,
-                    set_spacing: 1,
-                    append = &Label {
-                        set_text: track!(model.changed(SlaveModel::config()), format!("{}:{}", model.config.borrow().get_ip(), model.config.borrow().get_port()).as_str()),
                     },
                 },
                 set_end_widget = Some(&GtkBox) {
@@ -174,7 +179,7 @@ impl Widgets<SlaveModel, ()> for SlaveWidgets {
                         set_css_classes: &["circular"],
                         set_tooltip_text: Some("机位设置"),
                         put_data: args!("sender", components.config.sender().clone()),
-                        connect_activate(sender) => move |button| {
+                        connect_active_notify(sender) => move |button| {
                             let sender = button.get_data::<Sender<SlaveConfigMsg>>("sender").unwrap().clone();
                             send!(sender, SlaveConfigMsg::TogglePresented);
                         },
