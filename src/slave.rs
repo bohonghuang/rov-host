@@ -1,11 +1,11 @@
-use std::{cell::{Cell, RefCell}, net::Ipv4Addr, path::PathBuf, rc::Rc, str::FromStr};
+use std::{cell::{Cell, RefCell}, collections::HashMap, net::Ipv4Addr, path::PathBuf, rc::Rc, str::FromStr, sync::{Arc, Mutex}};
 
 use fragile::Fragile;
 use glib::{MainContext, Object, PRIORITY_DEFAULT, Sender, Type, clone};
 
 use gstreamer as gst;
 use gst::{Pipeline, prelude::*};
-use gtk::{AboutDialog, Align, ApplicationWindow, Box as GtkBox, Button, CenterBox, CheckButton, Dialog, DialogFlags, Entry, Frame, Grid, Image, Inhibit, Label, ListBox, MenuButton, Orientation, Popover, ResponseType, Revealer, RevealerTransitionType, ScrolledWindow, SelectionModel, Separator, SingleSelection, SpinButton, Stack, StringList, ToggleButton, Viewport, gdk_pixbuf::Pixbuf, gio::{Menu, MenuItem, MenuModel}, prelude::*};
+use gtk::{AboutDialog, Align, ApplicationWindow, Box as GtkBox, Button, CenterBox, CheckButton, Dialog, DialogFlags, Entry, Frame, Grid, Image, Inhibit, Label, ListBox, MenuButton, Orientation, Overlay, Popover, ResponseType, Revealer, RevealerTransitionType, ScrolledWindow, SelectionModel, Separator, SingleSelection, SpinButton, Stack, StringList, Switch, ToggleButton, Viewport, gdk_pixbuf::Pixbuf, gio::{Menu, MenuItem, MenuModel}, prelude::*};
 
 use adw::{ActionRow, ComboRow, HeaderBar, PreferencesGroup, PreferencesPage, PreferencesWindow, StatusPage, Window, prelude::*};
 
@@ -46,13 +46,45 @@ pub struct SlaveModel {
     #[no_eq]
     #[derivative(Default(value="Rc::new(MainContext::channel(PRIORITY_DEFAULT).0)"))]
     pub input_event_sender: Rc<Sender<InputSourceEvent>>,
+    pub slave_info_displayed: bool,
+    #[no_eq]
+    pub status: Arc<Mutex<HashMap<SlaveStatusClass, i16>>>,
 }
 
+#[derive(Debug, Hash, PartialEq, Eq, Clone)]
+pub enum SlaveStatusClass {
+    MotionX, MotionY, MotionZ, MotionRotate,
+    DepthLocked, DirectionLocked,
+}
+
+impl SlaveStatusClass {
+    pub fn from_button(button: u8) -> Option<SlaveStatusClass> {
+        match button {
+            7 => Some(SlaveStatusClass::DepthLocked),
+            8 => Some(SlaveStatusClass::DirectionLocked),
+            _ => None,
+        }
+    }
+    pub fn from_axis(axis: u8) -> Option<SlaveStatusClass> {
+        match axis {
+            0 => Some(SlaveStatusClass::MotionX),
+            1 => Some(SlaveStatusClass::MotionY),
+            2 => Some(SlaveStatusClass::MotionRotate),
+            3 => Some(SlaveStatusClass::MotionZ),
+            _ => None
+        }
+    }
+}
+
+const JOYSTICK_DISPLAY_THRESHOLD: i16 = 500;
+
 impl SlaveModel {
-    pub fn new(index: usize, config: SlaveConfigModel, preferences: Rc<RefCell<PreferencesModel>>, input_system: Rc<InputSystem>) -> Self {
-        let (sender, receiver) = MainContext::channel(PRIORITY_DEFAULT);
-        receiver.attach(None, |event| {
-            dbg!(event);
+    pub fn new(index: usize, config: SlaveConfigModel, preferences: Rc<RefCell<PreferencesModel>>, input_system: Rc<InputSystem>, sender: &Sender<SlaveMsg>) -> Self {
+        let (input_event_sender, input_event_receiver) = MainContext::channel(PRIORITY_DEFAULT);
+        let status_map = Arc::new(Mutex::new(HashMap::new()));
+        let sender = sender.clone();
+        input_event_receiver.attach(None, move |event| {
+            sender.send(SlaveMsg::SlaveInputReceived(index, event)).unwrap();
             Continue(true)
         });
         Self {
@@ -60,10 +92,26 @@ impl SlaveModel {
             config: Rc::new(RefCell::new(config)),
             preferences,
             input_system,
-            input_event_sender: Rc::new(sender),
+            input_event_sender: Rc::new(input_event_sender),
+            status: status_map,
             ..Default::default()
         }
     }
+    
+    pub fn get_target_status_or_insert_0(&mut self, status_class: &SlaveStatusClass) -> i16 {
+        let mut status = self.status.lock().unwrap();
+        *status.entry(status_class.clone()).or_insert(0)
+    }
+
+    pub fn get_target_status(&self, status_class: &SlaveStatusClass) -> i16 {
+        let status = self.status.lock().unwrap();
+        *status.get(status_class).unwrap_or(&0)
+    }
+    pub fn set_target_status(&mut self, status_class: &SlaveStatusClass, new_status: i16) {
+        let mut status = self.status.lock().unwrap();
+        *status.entry(status_class.clone()).or_insert(0) = new_status;
+    }
+    
 }
 #[derive(EnumIter, EnumToString, EnumFromString, PartialEq, Clone, Debug)]
 pub enum VideoAlgorithm {
@@ -150,6 +198,8 @@ impl Widgets<SlaveModel, ()> for SlaveWidgets {
                                 set_orientation: Orientation::Vertical, 
                                 append = &CenterBox {
                                     set_center_widget = Some(&Label) {
+                                        set_margin_start: 10,
+                                        set_margin_end: 10,
                                         set_text: "输入设备"
                                     },
                                     set_end_widget = Some(&Button) {
@@ -188,7 +238,128 @@ impl Widgets<SlaveModel, ()> for SlaveWidgets {
             },
             append = &GtkBox {
                 set_orientation: Orientation::Horizontal,
-                append: components.video.root_widget(),
+                append = &Overlay {
+                    set_child: Some(components.video.root_widget()),
+                    add_overlay = &GtkBox {
+                        set_valign: Align::Start,
+                        set_halign: Align::End,
+                        set_hexpand: true,
+                        set_margin_all: 20, 
+                        append = &Frame {
+                            set_css_classes: &["card"],
+                            set_child = Some(&GtkBox) {
+                                set_orientation: Orientation::Vertical,
+                                set_margin_all: 5,
+                                set_width_request: 50,
+                                set_spacing: 5,
+                                append = &Button {
+                                    set_child = Some(&CenterBox) {
+                                        set_center_widget = Some(&Label) {
+                                            set_margin_start: 10,
+                                            set_margin_end: 10,
+                                            set_text: "机位信息",
+                                        },
+                                        set_end_widget = Some(&Image) {
+                                            set_icon_name: watch!(Some(if model.slave_info_displayed { "go-down-symbolic" } else { "go-next-symbolic" })),
+                                        },
+                                    },
+                                    put_data: args!("index", model.index),
+                                    connect_clicked(sender) => move |button| {
+                                        send!(sender, SlaveMsg::SlaveToggleDisplayInfo(*button.get_data("index").unwrap()));
+                                    },
+                                },
+                                append = &Revealer {
+                                    set_reveal_child: watch!(model.slave_info_displayed),
+                                    set_child = Some(&GtkBox) {
+                                        set_spacing: 2,
+                                        set_margin_all: 5,
+                                        set_orientation: Orientation::Vertical,
+                                        set_halign: Align::Center,
+                                        append = &Frame {
+                                            set_hexpand: true,
+                                            set_halign: Align::Center,
+                                            set_child = Some(&Grid) {
+                                                set_margin_all: 2,
+                                                set_row_spacing: 2,
+                                                set_column_spacing: 2,
+                                                attach(0, 0, 1, 1) = &ToggleButton {
+                                                    set_icon_name: "object-rotate-left-symbolic",
+                                                    set_active: watch!(model.get_target_status(&SlaveStatusClass::MotionRotate) < -JOYSTICK_DISPLAY_THRESHOLD),
+                                                },
+                                                attach(2, 0, 1, 1) = &ToggleButton {
+                                                    set_icon_name: "object-rotate-right-symbolic",
+                                                    set_active: watch!(model.get_target_status(&SlaveStatusClass::MotionRotate) > JOYSTICK_DISPLAY_THRESHOLD),
+                                                },
+                                                attach(0, 2, 1, 1) = &ToggleButton {
+                                                    set_icon_name: "go-bottom-symbolic",
+                                                    set_active: watch!(model.get_target_status(&SlaveStatusClass::MotionZ) < -JOYSTICK_DISPLAY_THRESHOLD),
+                                                },
+                                                attach(2, 2, 1, 1) = &ToggleButton {
+                                                    set_icon_name: "go-top-symbolic",
+                                                    set_active: watch!(model.get_target_status(&SlaveStatusClass::MotionZ) > JOYSTICK_DISPLAY_THRESHOLD),
+                                                },
+                                                attach(1, 0, 1, 1) = &ToggleButton {
+                                                    set_icon_name: "go-up-symbolic",
+                                                    set_active: watch!(model.get_target_status(&SlaveStatusClass::MotionY) > JOYSTICK_DISPLAY_THRESHOLD),
+                                                },
+                                                attach(0, 1, 1, 1) = &ToggleButton {
+                                                    set_icon_name: "go-previous-symbolic",
+                                                    set_active: watch!(model.get_target_status(&SlaveStatusClass::MotionX) < -JOYSTICK_DISPLAY_THRESHOLD),
+                                                },
+                                                attach(2, 1, 1, 1) = &ToggleButton {
+                                                    set_icon_name: "go-next-symbolic",
+                                                    set_active: watch!(model.get_target_status(&SlaveStatusClass::MotionX) > JOYSTICK_DISPLAY_THRESHOLD),
+                                                },
+                                                attach(1, 2, 1, 1) = &ToggleButton {
+                                                    set_icon_name: "go-down-symbolic",
+                                                    set_active: watch!(model.get_target_status(&SlaveStatusClass::MotionY) < -JOYSTICK_DISPLAY_THRESHOLD),
+                                                },
+                                            },
+                                        },
+                                        append = &Label {
+                                            set_halign: Align::Start,
+                                            set_text: "机位信息 1",
+                                        },
+                                        append = &Label {
+                                            set_halign: Align::Start,
+                                            set_text: "机位信息 2",
+                                        },
+                                        append = &Label {
+                                            set_halign: Align::Start,
+                                            set_text: "机位信息 3",
+                                        },
+                                        append = &Label {
+                                            set_halign: Align::Start,
+                                            set_text: "机位信息 4",
+                                        },
+                                        append = &Label {
+                                            set_halign: Align::Start,
+                                            set_text: "机位信息 5",
+                                        },
+                                        append = &CenterBox {
+                                            set_hexpand: true,
+                                            set_start_widget = Some(&Label) {
+                                                set_text: "深度锁定",
+                                            },
+                                            set_end_widget = Some(&Switch) {
+                                                set_active: watch!(model.get_target_status(&SlaveStatusClass::DepthLocked) != 0),
+                                            },
+                                        },
+                                        append = &CenterBox {
+                                            set_hexpand: true,
+                                            set_start_widget = Some(&Label) {
+                                                set_text: "方向锁定",
+                                            },
+                                            set_end_widget = Some(&Switch) {
+                                                set_active: watch!(model.get_target_status(&SlaveStatusClass::DirectionLocked) != 0),
+                                            },
+                                        },
+                                    },
+                                },
+                            }
+                        }
+                    }
+                }, 
                 append: components.config.root_widget(),
             },
         }

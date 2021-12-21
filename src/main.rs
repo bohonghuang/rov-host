@@ -22,7 +22,7 @@ mod prelude;
 mod video;
 mod input;
 
-use crate::{preferences::PreferencesMsg, slave::{SlaveConfigModel, SlaveConfigMsg, SlaveModel, SlaveVideoMsg}};
+use crate::{preferences::PreferencesMsg, slave::{SlaveConfigModel, SlaveConfigMsg, SlaveModel, SlaveStatusClass, SlaveVideoMsg}};
 
 use sdl2::{JoystickSubsystem, Sdl, event::Event, joystick::Joystick};
 
@@ -210,6 +210,8 @@ pub enum AppMsg {
     SlaveTogglePolling(usize),
     SlaveSetInputSource(usize, Option<InputSource>),
     SlaveUpdateInputSources(usize),
+    SlaveToggleDisplayInfo(usize),
+    SlaveInputReceived(usize, InputSourceEvent),
     DispatchInputEvent(InputEvent),
     PreferencesUpdated(PreferencesModel),
     ToggleRecording, 
@@ -247,7 +249,7 @@ impl AppUpdate for AppModel {
                 let index = self.get_slaves().len() as u8;
                 ip_octets[3] = ip_octets[3].wrapping_add(index);
                 let video_port = self.get_preferences().borrow().get_default_local_video_port().wrapping_add(index as u16);
-                let slave = SlaveModel::new(index as usize, SlaveConfigModel::new(index as usize, Ipv4Addr::from(ip_octets), *self.get_preferences().clone().borrow().get_default_slave_port(), video_port), self.get_preferences().clone(), self.input_system.clone());
+                let slave = SlaveModel::new(index as usize, SlaveConfigModel::new(index as usize, Ipv4Addr::from(ip_octets), *self.get_preferences().clone().borrow().get_default_slave_port(), video_port), self.get_preferences().clone(), self.input_system.clone(), &sender);
                 self.get_mut_slaves().push(slave);
                 self.set_recording(Some(false));
             },
@@ -316,6 +318,30 @@ impl AppUpdate for AppModel {
             },
             AppMsg::StopInputSystem => {
                 self.input_system.stop();
+            },
+            AppMsg::SlaveToggleDisplayInfo(index) => {
+                if let Some(slave) = self.slaves.get_mut(index) {
+                    slave.set_slave_info_displayed(!*slave.get_slave_info_displayed());
+                }
+            },
+            AppMsg::SlaveInputReceived(index, event) => {
+                if let Some(slave) = self.slaves.get_mut(index) {
+                    match event {
+                        InputSourceEvent::ButtonChanged(button, pressed) => {
+                            if let Some(status_class) = SlaveStatusClass::from_button(button) {
+                                if pressed {
+                                    slave.set_target_status(&status_class, !(slave.get_target_status(&status_class) != 0) as i16);
+                                }
+                            }
+                        },
+                        InputSourceEvent::AxisChanged(axis, value) => {
+                            if let Some(status_class) = SlaveStatusClass::from_axis(axis) {
+                                slave.set_target_status(&status_class, value.saturating_mul(if axis == 1 || axis == 3 { -1 } else { 1 }));
+                            }
+                        },
+                    }
+                    slave.set_status(slave.get_status().clone());
+                }
             },
         }
         for i in 0..self.slaves.len() {

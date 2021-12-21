@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, cell::RefCell, collections::HashMap, fmt::Debug, rc::Rc, sync::{Arc, Mutex}};
+use std::{borrow::Borrow, cell::RefCell, collections::HashMap, fmt::Debug, rc::Rc, sync::{Arc, Mutex}, time::Duration};
 
 use fragile::Fragile;
 use glib::{Continue, MainContext, PRIORITY_HIGH, Sender};
@@ -100,14 +100,13 @@ impl InputSystem {
                 }
             }).collect();
         
-        let mut joysticks = Fragile::new(joysticks);
-        let sdl_fragile = Fragile::new(self.sdl.clone());
-        let sender_fragile = Fragile::new(self.event_sender.clone());
+        let sdl = self.sdl.clone();
+        let sender = self.event_sender.clone();
         let running = self.running.clone();
         *self.running.lock().unwrap() = true;
-        glib::idle_add(move || {
-            let mut event_pump = sdl_fragile.get().event_pump().expect("无法读取手柄事件");
-            if let Some(sender) = sender_fragile.get().as_ref().borrow().as_ref() {
+        glib::timeout_add_local(Duration::from_millis(16), move || {
+            let mut event_pump = sdl.event_pump().expect("无法读取手柄事件");
+            if let Some(sender) = sender.as_ref().borrow().as_ref() {
                 for event in event_pump.poll_iter() {
                     match event {
                         Event::JoyAxisMotion {
@@ -126,7 +125,7 @@ impl InputSystem {
                         }
                         Event::JoyButtonDown { button_idx, which, .. } => {
                             println!("Button {} down", button_idx);
-                            let (joystick, (lo_freq, hi_freq)) = joysticks.get_mut().get_mut(&which).unwrap();
+                            let (joystick, (lo_freq, hi_freq)) = joysticks.get_mut(&which).unwrap();
                             if button_idx == 0 {
                                 *lo_freq = 65535;
                             } else if button_idx == 1 {
@@ -145,7 +144,7 @@ impl InputSystem {
                         }
                         Event::JoyButtonUp { button_idx, which, .. } => {
                             println!("Button {} up", button_idx);
-                            let (joystick, (lo_freq, hi_freq)) = joysticks.get_mut().get_mut(&which).unwrap();
+                            let (joystick, (lo_freq, hi_freq)) = joysticks.get_mut(&which).unwrap();
                             if button_idx == 0 {
                                 *lo_freq = 65535;
                             } else if button_idx == 1 {
