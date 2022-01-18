@@ -1,17 +1,17 @@
 use std::{cell::{Cell, RefCell}, collections::HashMap, net::Ipv4Addr, rc::Rc};
 
 use fragile::Fragile;
-use glib::{MainContext, PRIORITY_DEFAULT, PRIORITY_HIGH, Sender, Type, clone};
+use glib::{MainContext, PRIORITY_DEFAULT, PRIORITY_HIGH, Type, clone, Sender};
 
 use gstreamer as gst;
 
 use gtk::{AboutDialog, Align, Box as GtkBox, Button, CenterBox, Frame, Grid, Image, Inhibit, Label, MenuButton, Orientation, Stack, ToggleButton, gio::{Menu, MenuItem}, prelude::*};
 
-use adw::{ApplicationWindow, CenteringPolicy, ColorScheme, HeaderBar, StatusPage, StyleManager, prelude::*, traits::ApplicationWindowExt};
+use adw::{ApplicationWindow, CenteringPolicy, ColorScheme, HeaderBar, StatusPage, StyleManager, prelude::*};
 
 use input::{InputEvent, InputSource, InputSourceEvent, InputSystem};
 use preferences::PreferencesModel;
-use relm4::{AppUpdate, ComponentUpdate, Components, Model, RelmApp, RelmComponent, Widgets, actions::{ActionGroupName, ActionName, RelmAction, RelmActionGroup}, factory::{DynamicIndex, FactoryPrototype, FactoryVec, FactoryVecDeque, positions::GridPosition}, new_action_group, new_statful_action, new_statless_action, send};
+use relm4::{AppUpdate, ComponentUpdate, Components, Model, RelmApp, RelmComponent, Widgets, actions::{ActionGroupName, ActionName, RelmAction, RelmActionGroup}, factory::{DynamicIndex, FactoryPrototype, FactoryVec, FactoryVecDeque, positions::GridPosition}, send, new_stateful_action, new_stateless_action, new_action_group};
 use relm4_macros::widget;
 use lazy_static::{__Deref, lazy_static};
 
@@ -85,9 +85,9 @@ impl Model for AppModel {
 }
 
 new_action_group!(AppActionGroup, "main");
-new_statless_action!(PreferencesAction, AppActionGroup, "preferences");
-new_statless_action!(KeybindingsAction, AppActionGroup, "keybindings");
-new_statless_action!(AboutDialogAction, AppActionGroup, "about");
+new_stateless_action!(PreferencesAction, AppActionGroup, "preferences");
+new_stateless_action!(KeybindingsAction, AppActionGroup, "keybindings");
+new_stateless_action!(AboutDialogAction, AppActionGroup, "about");
 
 fn application_window() -> ApplicationWindow {
     ApplicationWindow::builder().build()
@@ -175,13 +175,13 @@ impl Widgets<AppModel, ()> for AppWidgets {
     fn post_init() {
         let app_group = RelmActionGroup::<AppActionGroup>::new();
         
-        let action_preferences: RelmAction<PreferencesAction> = RelmAction::new_statelesss(clone!(@strong sender => move |_| {
+        let action_preferences: RelmAction<PreferencesAction> = RelmAction::new_stateless(clone!(@strong sender => move |_| {
             send!(sender, AppMsg::OpenPreferencesWindow);
         }));
-        let action_keybindings: RelmAction<KeybindingsAction> = RelmAction::new_statelesss(clone!(@strong sender => move |_| {
+        let action_keybindings: RelmAction<KeybindingsAction> = RelmAction::new_stateless(clone!(@strong sender => move |_| {
             send!(sender, AppMsg::OpenKeybindingsWindow);
         }));
-        let action_about: RelmAction<AboutDialogAction> = RelmAction::new_statelesss(clone!(@strong sender => move |_| {
+        let action_about: RelmAction<AboutDialogAction> = RelmAction::new_stateless(clone!(@strong sender => move |_| {
             send!(sender, AppMsg::OpenAboutDialog);
         }));
         
@@ -294,7 +294,7 @@ impl AppUpdate for AppModel {
                 None => (),
             },
             AppMsg::SwitchColorScheme => {
-                let style_manager = StyleManager::default().unwrap();
+                let style_manager = StyleManager::default();
                 style_manager.set_color_scheme(if style_manager.is_dark() { ColorScheme::PreferLight } else { ColorScheme::ForceDark });
             },
             AppMsg::SlaveSetInputSource(index, source) => {

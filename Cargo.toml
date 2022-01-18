@@ -6,17 +6,17 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-relm4 = "0.4.0-beta.2"
-relm4-components = "0.4.0-beta.2"
-relm4-macros = "0.4.0-beta.2"
-opencv = "0.60"
+relm4 = "0.4.1"
+relm4-components = "0.4.0"
+relm4-macros = "0.4.1"
+opencv = "0.62.0"
 fragile = "1.0.0"
-gstreamer = "0.17.4"
-gstreamer-rtsp = "0.17.0"
-gstreamer-app = "0.17.0"
-gstreamer-video = "0.17.0"
-glib = "0.14.8"
-glib-macros = "0.14.1"
+gstreamer = "0.18.0"
+gstreamer-rtsp = "0.18.0"
+gstreamer-app = "0.18.0"
+gstreamer-video = "0.18.0"
+glib = "0.15.2"
+glib-macros = "0.15.1"
 strum = "0.23.0"
 strum_macros = "0.23.1"
 dirs = "4.0.0"
@@ -29,9 +29,9 @@ lazy_static = "1.4.0"
 
 [dependencies.adw]
 package = "libadwaita"
-version = "0.1.0-alpha-6"
+version = "0.1.0"
 
 [dependencies.gtk]
 package = "gtk4"
-version = "0.3.1"
+version = "0.4.1"
 features = ["v4_4"]

@@ -4,9 +4,9 @@ use glib::{Sender, clone};
 
 use gtk::{Adjustment, Align, ApplicationWindow, Box as GtkBox, Button, Dialog, Entry, FileChooser, FileChooserDialog, Inhibit, Label, ListBox, ListBoxRow, MapListModel, Orientation, ResponseType, ScrolledWindow, SelectionModel, SpinButton, StringList, Switch, Viewport, Window, prelude::*};
 
-use adw::{ActionRow, ComboRow, ComboRowBuilder, EnumListModel, PreferencesGroup, PreferencesPage, PreferencesWindow, prelude::*};
+use adw::{ActionRow, ComboRow, EnumListModel, PreferencesGroup, PreferencesPage, PreferencesWindow, prelude::*};
 
-use relm4::{AppUpdate, ComponentUpdate, Components, Model, RelmApp, RelmComponent, Widgets, actions::{ActionGroupName, ActionName, RelmAction, RelmActionGroup}, factory::FactoryVecDeque, send, new_action_group, new_statful_action, new_statless_action};
+use relm4::{AppUpdate, ComponentUpdate, Components, Model, RelmApp, RelmComponent, Widgets, actions::{ActionGroupName, ActionName, RelmAction, RelmActionGroup}, factory::FactoryVecDeque, send, new_action_group, new_stateful_action, new_stateless_action};
 use relm4_macros::widget;
 
 use strum::IntoEnumIterator;
@@ -85,7 +85,6 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
             set_transient_for: parent!(Some(&parent_widgets.app_window)),
             set_destroy_with_parent: true,
             set_modal: true,
-            set_can_swipe_back: true,
             connect_close_request(sender) => move |window| {
                 window.hide();
                 Inhibit(true)

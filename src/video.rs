@@ -14,7 +14,7 @@ use gtk::gdk::Display;
 use gtk::gio::{Action, Icon, Menu, MenuItem, SimpleAction};
 use opencv::{highgui, prelude::*, videoio, Result, imgproc, imgcodecs, core::Size};
 
-use gtk::{AboutDialog, Align, HeaderBar, IconLookupFlags, IconTheme, Label, MenuButton, PageSetupUnixDialogBuilder, ToggleButton, show_about_dialog};
+use gtk::{AboutDialog, Align, HeaderBar, IconLookupFlags, IconTheme, Label, MenuButton, ToggleButton, show_about_dialog};
 use gtk::gdk_pixbuf::{Colorspace, Pixbuf};
 use gtk::{Orientation, prelude::*};
 use gtk::{Application, ApplicationWindow, Button, Box as GtkBox, Image};
@@ -32,7 +32,7 @@ const VIDEO_HEIGHT: i32 = 1080;
 pub fn create_queue_to_file(filename: &str) -> Result<[gst::Element; 3], &'static str> {
     let queue_to_file = gst::ElementFactory::make("queue", None).map_err(|_| "Missing element: queue")?;
     let filesink = gst::ElementFactory::make("filesink", None).map_err(|_| "Missing element: filesink")?;
-    filesink.set_property("location", filename).unwrap();
+    filesink.set_property("location", filename);
     let matroskamux = gst::ElementFactory::make("matroskamux", None).map_err(|_| "Missing element: matroskamux")?;
     Ok([queue_to_file, matroskamux, filesink])
 }
@@ -69,9 +69,9 @@ pub fn create_pipeline(port: u16) -> Result<gst::Pipeline, &'static str> {
     let pipeline = gst::Pipeline::new(None);
     let udpsrc = gst::ElementFactory::make("udpsrc", None).map_err(|_| "Missing element: udpsrc")?;
     let appsink = gst::ElementFactory::make("appsink", Some("display")).map_err(|_| "Missing element: appsink")?;
-    udpsrc.set_property("port", port as i32).map_err(|_| "Cannot set udpsrc port")?;
+    udpsrc.set_property("port", port as i32);
     let caps = gst::caps::Caps::from_str("application/x-rtp, media=(string)video, encoding-name=(string)H264").map_err(|_| "Cannot create Caps")?;
-    udpsrc.set_property("caps", caps).map_err(|_| "Cannot set udpsrc caps")?;
+    udpsrc.set_property("caps", caps);
     let rtph264depay = gst::ElementFactory::make("rtph264depay", None).map_err(|_| "Missing element: rtph264depay")?;
     let h264parse = gst::ElementFactory::make("h264parse", None).map_err(|_| "Missing element: h264parse")?;
     let output_tee = gst::ElementFactory::make("tee", Some("output_tee")).map_err(|_| "Missing element: tee")?;

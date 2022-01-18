@@ -9,7 +9,7 @@ use gtk::{AboutDialog, Align, ApplicationWindow, Box as GtkBox, Button, CenterBo
 
 use adw::{ActionRow, ComboRow, HeaderBar, PreferencesGroup, PreferencesPage, PreferencesWindow, StatusPage, Window, prelude::*};
 
-use relm4::{AppUpdate, WidgetPlus, ComponentUpdate, Components, Model, RelmApp, RelmComponent, Widgets, actions::{ActionGroupName, ActionName, RelmAction, RelmActionGroup}, factory::{DynamicIndex, FactoryPrototype, FactoryVec, FactoryVecDeque, positions::GridPosition}, new_action_group, new_statful_action, new_statless_action, send};
+use relm4::{AppUpdate, WidgetPlus, ComponentUpdate, Components, Model, RelmApp, RelmComponent, Widgets, actions::{ActionGroupName, ActionName, RelmAction, RelmActionGroup}, factory::{DynamicIndex, FactoryPrototype, FactoryVec, FactoryVecDeque, positions::GridPosition}, new_action_group, send};
 use relm4_macros::widget;
 
 use strum::IntoEnumIterator;
@@ -387,7 +387,7 @@ impl FactoryPrototype for SlaveModel {
     type View = Grid;
     type Msg = SlaveMsg;
 
-    fn generate(
+    fn init_view(
         &self,
         index: &usize,
         sender: Sender<SlaveMsg>,
@@ -413,7 +413,7 @@ impl FactoryPrototype for SlaveModel {
         }
     }
 
-    fn update(
+    fn view(
         &self,
         index: &usize,
         widgets: &SlaveWidgets,
@@ -430,7 +430,7 @@ impl FactoryPrototype for SlaveModel {
         }
     }
 
-    fn get_root(widgets: &SlaveWidgets) -> &GtkBox {
+    fn root_widget(widgets: &SlaveWidgets) -> &GtkBox {
         &widgets.vbox
     }
 }
