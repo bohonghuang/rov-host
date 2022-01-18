@@ -60,6 +60,8 @@ pub struct PreferencesModel {
     pub default_slave_port: u16,
     #[derivative(Default(value="5600"))]
     pub default_local_video_port: u16,
+    #[derivative(Default(value="60"))]
+    pub default_input_sending_rate: u16,
 }
 
 pub enum PreferencesMsg {
@@ -69,6 +71,7 @@ pub enum PreferencesMsg {
     SetSlaveDefaultPort(u16),
     SetInitialSlaveNum(u8),
     SetDefaultLocalVideoPort(u16),
+    SetInputSendingRate(u16),
 }
 
 impl Model for PreferencesModel {
@@ -143,7 +146,39 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                     },
                 },
             },
-            
+            add = &PreferencesPage {
+                set_title: "控制",
+                set_icon_name: Some("input-gaming-symbolic"),
+                add = &PreferencesGroup {
+                    set_title: "发送",
+                    set_description: Some("向下位机发送控制信号的设置"),
+                    add = &ActionRow {
+                        set_title: "增量发送",
+                        set_subtitle: "每次发送只发送相对上一次发送的变化值以节省数据发送量。",
+                        set_sensitive: false,
+                        add_suffix: increamental_sending_switch = &Switch {
+                            set_active: false,
+                            set_valign: Align::Center,
+                        },
+                        set_activatable_widget: Some(&increamental_sending_switch),
+                    },
+                    add = &ActionRow {
+                        set_title: "输入发送率",
+                        set_subtitle: "每秒钟向下位机发送的控制数据包的个数，该值越高意味着控制越灵敏，但在较差的网络条件下可能产生更大的延迟。",
+                        add_suffix = &SpinButton::with_range(1.0, 1000.0, 1.0) {
+                            set_value: track!(model.changed(PreferencesModel::default_input_sending_rate()), model.default_input_sending_rate as f64),
+                            set_digits: 0,
+                            set_valign: Align::Center,
+                            connect_changed(sender) => move |button| {
+                                send!(sender, PreferencesMsg::SetInputSendingRate(button.value() as u16));
+                            }
+                        },
+                        add_suffix = &Label {
+                            set_label: "Hz",
+                        },
+                    },
+                },
+            },
             add = &PreferencesPage {
                 set_title: "视频",
                 set_icon_name: Some("emblem-videos-symbolic"),
@@ -213,8 +248,8 @@ impl ComponentUpdate<AppModel> for PreferencesModel {
             PreferencesMsg::SetSlaveDefaultPort(port) => self.default_slave_port = port,
             PreferencesMsg::SetInitialSlaveNum(num) => self.initial_slave_num = num,
             PreferencesMsg::SetDefaultLocalVideoPort(port) => self.default_local_video_port = port,
+            PreferencesMsg::SetInputSendingRate(rate) => self.default_input_sending_rate = rate,
         }
         send!(parent_sender, AppMsg::PreferencesUpdated(self.clone()));
     }
 }
-

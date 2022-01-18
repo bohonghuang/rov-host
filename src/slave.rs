@@ -1,13 +1,13 @@
-use std::{cell::{Cell, RefCell}, collections::HashMap, net::Ipv4Addr, path::PathBuf, rc::Rc, str::FromStr, sync::{Arc, Mutex}, fmt::Debug};
+use std::{cell::{Cell, RefCell}, collections::HashMap, net::Ipv4Addr, path::PathBuf, rc::Rc, str::FromStr, sync::{Arc, Mutex}, fmt::Debug, thread, time::Duration};
 
 use fragile::Fragile;
-use glib::{MainContext, Object, PRIORITY_DEFAULT, Sender, Type, clone};
+use glib::{MainContext, Object, PRIORITY_DEFAULT, Sender, Type, clone, WeakRef};
 
 use gstreamer as gst;
 use gst::{Pipeline, prelude::*};
-use gtk::{AboutDialog, Align, ApplicationWindow, Box as GtkBox, Button, CenterBox, CheckButton, Dialog, DialogFlags, Entry, Frame, Grid, Image, Inhibit, Label, ListBox, MenuButton, Orientation, Overlay, Popover, ResponseType, Revealer, RevealerTransitionType, ScrolledWindow, SelectionModel, Separator, SingleSelection, SpinButton, Stack, StringList, Switch, ToggleButton, Viewport, gdk_pixbuf::Pixbuf, gio::{Menu, MenuItem, MenuModel}, prelude::*, Picture};
+use gtk::{AboutDialog, Align, Box as GtkBox, Button, CenterBox, CheckButton, Dialog, DialogFlags, Entry, Frame, Grid, Image, Inhibit, Label, ListBox, MenuButton, Orientation, Overlay, Popover, ResponseType, Revealer, RevealerTransitionType, ScrolledWindow, SelectionModel, Separator, SingleSelection, SpinButton, Stack, StringList, Switch, ToggleButton, Viewport, gdk_pixbuf::Pixbuf, gio::{Menu, MenuItem, MenuModel}, prelude::*, Picture, FileFilter, ProgressBar};
 
-use adw::{ActionRow, ComboRow, HeaderBar, PreferencesGroup, PreferencesPage, PreferencesWindow, StatusPage, Window, prelude::*};
+use adw::{ActionRow, ComboRow, HeaderBar, PreferencesGroup, PreferencesPage, PreferencesWindow, StatusPage, Window, prelude::*, Carousel, ApplicationWindow, Clamp};
 
 use relm4::{AppUpdate, WidgetPlus, ComponentUpdate, Components, Model, RelmApp, RelmComponent, Widgets, actions::{ActionGroupName, ActionName, RelmAction, RelmActionGroup}, factory::{DynamicIndex, FactoryPrototype, FactoryVec, FactoryVecDeque, positions::GridPosition}, new_action_group, send, MicroWidgets, MicroModel, MicroComponent};
 use relm4_macros::{widget, micro_widget};
@@ -169,7 +169,7 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                 set_center_widget = Some(&GtkBox) {
                     set_hexpand: true,
                     set_halign: Align::Center,
-                    set_spacing: 1,
+                    set_spacing: 5,
                     append = &Label {
                         set_text: track!(model.changed(SlaveModel::config()), format!("{}:{}", model.config.model().get_ip(), model.config.model().get_port()).as_str()),
                     },
@@ -207,7 +207,23 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                 set_end_widget = Some(&GtkBox) {
                     set_hexpand: true,
                     set_halign: Align::End,
-                    set_spacing: 1,
+                    set_spacing: 5,
+                    append = &Button {
+                        set_icon_name: "software-update-available-symbolic",
+                        set_css_classes: &["circular"],
+                        set_tooltip_text: Some("固件更新"),
+                        connect_clicked(sender) => move |button| {
+                            send!(sender, SlaveMsg::OpenFirmwareUpater(button.clone()));
+                        },
+                    },
+                    append = &Button {
+                        set_icon_name: "utilities-system-monitor-symbolic",
+                        set_css_classes: &["circular"],
+                        set_tooltip_text: Some("参数调校"),
+                        connect_clicked(sender) => move |button| {
+                            send!(sender, SlaveMsg::OpenParameterTuner);
+                        },
+                    },
                     append = &ToggleButton {
                         set_icon_name: "emblem-system-symbolic",
                         set_css_classes: &["circular"],
@@ -363,13 +379,15 @@ pub enum SlaveMsg {
     UpdateInputSources,
     ToggleDisplayInfo,
     InputReceived(InputSourceEvent),
+    OpenFirmwareUpater(Button),
+    OpenParameterTuner,
 }
 
 impl MicroModel for SlaveModel {
     type Msg = SlaveMsg;
     type Widgets = SlaveWidgets;
-    type Data = ();
-    fn update(&mut self, msg: SlaveMsg, data: &(), sender: Sender<SlaveMsg>) {
+    type Data = WeakRef<ApplicationWindow>;
+    fn update(&mut self, msg: SlaveMsg, window: &WeakRef<ApplicationWindow>, sender: Sender<SlaveMsg>) {
         match msg {
             SlaveMsg::ConfigUpdated => {
                 self.get_mut_config();
@@ -416,7 +434,223 @@ impl MicroModel for SlaveModel {
                 }
                 self.set_status(self.get_status().clone());
             },
+            SlaveMsg::OpenFirmwareUpater(button) => {
+                let component = MicroComponent::new(SlaveFirmwareUpdaterModel::new(), ());
+                component.root_widget().set_transient_for(Some(&window.upgrade().unwrap()));
+            },
+            SlaveMsg::OpenParameterTuner => todo!(),
         }
+    }
+}
+
+pub enum SlaveFirmwareUpdaterMsg {
+    NextStep,
+    FirmwareFileSelected(PathBuf),
+    FirmwareUploadProgressUpdated(f32),
+}
+
+#[tracker::track(pub)]
+#[derive(Debug, Derivative)]
+#[derivative(Default)]
+pub struct SlaveFirmwareUpdaterModel {
+    current_page: u32,
+    firmware_file_path: Option<PathBuf>,
+    firmware_uploading_progress: f32,
+}
+
+impl SlaveFirmwareUpdaterModel {
+    pub fn new() -> SlaveFirmwareUpdaterModel {
+        SlaveFirmwareUpdaterModel { ..Default::default() }
+    }
+}
+
+impl MicroModel for SlaveFirmwareUpdaterModel {
+    type Msg = SlaveFirmwareUpdaterMsg;
+    type Widgets = SlaveFirmwareUpdaterWidgets;
+    type Data = ();
+    
+    fn update(&mut self, msg: SlaveFirmwareUpdaterMsg, data: &(), sender: Sender<SlaveFirmwareUpdaterMsg>) {
+        match msg {
+            SlaveFirmwareUpdaterMsg::NextStep => self.set_current_page(self.get_current_page().wrapping_add(1)),
+            SlaveFirmwareUpdaterMsg::FirmwareFileSelected(path) => self.set_firmware_file_path(Some(path)),
+            SlaveFirmwareUpdaterMsg::FirmwareUploadProgressUpdated(progress) => {
+                self.set_firmware_uploading_progress(progress);
+                if progress >= 1.0 {
+                    send!(sender, SlaveFirmwareUpdaterMsg::NextStep);
+                }
+            },
+        }
+    }
+}
+
+trait CarouselExt {
+    fn scroll_to_page(&self, page_index: u32, animate: bool);
+}
+
+impl CarouselExt for Carousel {
+    fn scroll_to_page(&self, page_index: u32, animate: bool) {
+        self.scroll_to(&self.nth_page(page_index), animate);
+    }
+}
+
+fn open_file<T, F>(filters: &[FileFilter], parent_window: &T, callback: F)
+where T: IsA<gtk::Window>,
+      F: 'static + Fn(Option<PathBuf>) -> () {
+    relm4_macros::view! {
+        file_chooser = gtk::FileChooserNative {
+            set_action: gtk::FileChooserAction::Open,
+            add_filter: iterate!(filters),
+            set_create_folders: true,
+            set_cancel_label: Some("取消"),
+            set_accept_label: Some("打开"),
+            set_modal: true,
+            set_transient_for: Some(parent_window),
+            connect_response => move |dialog, res_ty| {
+                match res_ty {
+                    gtk::ResponseType::Accept => {
+                        if let Some(file) = dialog.file() {
+                            if let Some(path) = file.path() {
+                                callback(Some(path));
+                                return;
+                            }
+                        }
+                    },
+                    gtk::ResponseType::Cancel => {
+                        callback(None)
+                    },
+                    _ => (),
+                }
+            },
+        }
+    }
+    file_chooser.show();
+    std::mem::forget(file_chooser); // TODO: 内存泄露处理
+}
+
+#[micro_widget(pub)]
+impl MicroWidgets<SlaveFirmwareUpdaterModel> for SlaveFirmwareUpdaterWidgets {
+    view! {
+        window = Window {
+            set_title: Some("固件更新向导"),
+            set_width_request: 480,
+            set_height_request: 480, 
+            set_modal: true,
+            set_visible: true,
+            set_content = Some(&GtkBox) {
+                set_orientation: Orientation::Vertical,
+                append = &HeaderBar {
+                    set_sensitive: track!(model.changed(SlaveFirmwareUpdaterModel::firmware_uploading_progress()), *model.get_firmware_uploading_progress() <= 0.0 || *model.get_firmware_uploading_progress() >= 1.0),
+                },
+                append: carousel = &Carousel {
+                    set_allow_mouse_drag: false,
+                    set_allow_long_swipes: false,
+                    set_allow_scroll_wheel: false,
+                    set_hexpand: true,
+                    set_vexpand: true,
+                    scroll_to_page: track!(model.changed(SlaveFirmwareUpdaterModel::current_page()), model.current_page, true),
+                    append = &StatusPage {
+                        set_icon_name: Some("software-update-available-symbolic"),
+                        set_title: "欢迎使用固件更新向导",
+                        set_hexpand: true,
+                        set_vexpand: true,
+                        set_description: Some("请确保固件更新期间机器人有充足的电量供应。"),
+                        set_child = Some(&Button) {
+                            set_css_classes: &["suggested-action", "pill"],
+                            set_halign: Align::Center,
+                            set_label: "下一步",
+                            connect_clicked(sender) => move |button| {
+                                send!(sender, SlaveFirmwareUpdaterMsg::NextStep);
+                            },
+                        },
+                    },
+                    append = &StatusPage {
+                        set_icon_name: Some("system-file-manager-symbolic"),
+                        set_title: "请选择固件文件",
+                        set_hexpand: true,
+                        set_vexpand: true,
+                        set_description: Some("选择的固件文件必须为下位机的可执行文件。"),
+                        set_child = Some(&GtkBox) {
+                            set_orientation: Orientation::Vertical,
+                            set_spacing: 50,
+                            append = &PreferencesGroup {
+                                add = &ActionRow {
+                                    set_title: "固件文件",
+                                    set_subtitle: track!(model.changed(SlaveFirmwareUpdaterModel::firmware_file_path()), &model.firmware_file_path.as_ref().map_or("请选择文件".to_string(), |path| path.to_str().unwrap().to_string())),
+                                    add_suffix: browse_firmware_file_button = &Button {
+                                        set_label: "浏览",
+                                        set_valign: Align::Center,
+                                        connect_clicked(sender, window) => move |button| {
+                                            let filter = FileFilter::new();
+                                            filter.add_suffix("bin");
+                                            filter.set_name(Some("固件文件"));
+                                            open_file(&[filter], &window, clone!(@strong sender => move |path| {
+                                                match path {
+                                                    Some(path) => {
+                                                        send!(sender, SlaveFirmwareUpdaterMsg::FirmwareFileSelected(path));
+                                                    },
+                                                    None => (),
+                                                }
+                                            }));
+                                        },
+                                    },
+                                    set_activatable_widget: Some(&browse_firmware_file_button),
+                                },
+                            },
+                            append = &Button {
+                                set_css_classes: &["suggested-action", "pill"],
+                                set_halign: Align::Center,
+                                set_label: "开始更新",
+                                set_sensitive: track!(model.changed(SlaveFirmwareUpdaterModel::firmware_file_path()), model.get_firmware_file_path().as_ref().map_or(false, |pathbuf| pathbuf.exists() && pathbuf.is_file())),
+                                connect_clicked(sender) => move |button| {
+                                    send!(sender, SlaveFirmwareUpdaterMsg::NextStep);
+                                    thread::spawn(clone!(@strong sender => move || {
+                                        for i in 0 ..= 100 {
+                                            send!(sender, SlaveFirmwareUpdaterMsg::FirmwareUploadProgressUpdated((i as f32) / 100.0));
+                                            thread::sleep(Duration::from_millis(50));
+                                        }
+                                    }));
+                                },
+                            }
+                        },
+                    },
+                    append = &StatusPage {
+                        set_icon_name: Some("folder-download-symbolic"),
+                        set_title: "正在更新固件...",
+                        set_hexpand: true,
+                        set_vexpand: true,
+                        set_description: Some("请不要切断连接或电源。"),
+                        set_child = Some(&GtkBox) {
+                            set_orientation: Orientation::Vertical,
+                            set_spacing: 50,
+                            append = &ProgressBar {
+                                set_fraction: track!(model.changed(SlaveFirmwareUpdaterModel::firmware_uploading_progress()), *model.get_firmware_uploading_progress() as f64)
+                            },
+                        },
+                    },
+                    append = &StatusPage {
+                        set_icon_name: Some("emblem-ok-symbolic"),
+                        set_title: "固件更新完成",
+                        set_hexpand: true,
+                        set_vexpand: true,
+                        set_description: Some("机器人将自动重启，请稍后手动进行连接。"),
+                        set_child = Some(&Button) {
+                            set_css_classes: &["suggested-action", "pill"],
+                            set_halign: Align::Center,
+                            set_label: "完成",
+                            connect_clicked(window) => move |button| {
+                                window.destroy();
+                            },
+                        },
+                    },
+                },
+            },
+        }
+    }
+}
+
+impl Debug for SlaveFirmwareUpdaterWidgets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.root_widget().fmt(f)
     }
 }
 
@@ -773,4 +1007,3 @@ impl MicroWidgets<SlaveVideoModel> for SlaveVideoWidgets {
         }
     }
 }
-

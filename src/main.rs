@@ -1,13 +1,13 @@
 use std::{cell::{Cell, RefCell}, collections::HashMap, net::Ipv4Addr, rc::Rc};
 
 use fragile::Fragile;
-use glib::{MainContext, PRIORITY_DEFAULT, PRIORITY_HIGH, Type, clone, Sender};
+use glib::{MainContext, PRIORITY_DEFAULT, PRIORITY_HIGH, Type, clone, Sender, WeakRef};
 
 use gstreamer as gst;
 
 use gtk::{AboutDialog, Align, Box as GtkBox, Button, CenterBox, Frame, Grid, Image, Inhibit, Label, MenuButton, Orientation, Stack, ToggleButton, gio::{Menu, MenuItem}, prelude::*};
 
-use adw::{ApplicationWindow, CenteringPolicy, ColorScheme, HeaderBar, StatusPage, StyleManager, prelude::*};
+use adw::{ApplicationWindow, CenteringPolicy, ColorScheme, HeaderBar, StatusPage, StyleManager, prelude::*, Window};
 
 use input::{InputEvent, InputSource, InputSourceEvent, InputSystem};
 use preferences::PreferencesModel;
@@ -139,8 +139,8 @@ impl Widgets<AppModel, ()> for AppWidgets {
                         set_icon_name: "window-new-symbolic",
                         set_tooltip_text: Some("新建机位"),
                         set_sensitive: track!(model.changed(AppModel::recording()), model.recording != Some(true)),
-                        connect_clicked(sender) => move |button| {
-                            send!(sender, AppMsg::NewSlave);
+                        connect_clicked(sender, app_window) => move |button| {
+                            send!(sender, AppMsg::NewSlave(app_window.downgrade()));
                         },
                     },
                 },
@@ -191,7 +191,7 @@ impl Widgets<AppModel, ()> for AppWidgets {
         app_group.add_action(action_about);
         app_window.insert_action_group("main", Some(&app_group.into_action_group()));
         for _ in 0..*model.preferences.borrow().get_initial_slave_num() {
-            send!(sender, AppMsg::NewSlave);
+            send!(sender, AppMsg::NewSlave(app_window.clone().downgrade()));
         }
         
         let (input_event_sender, input_event_receiver) = MainContext::channel(PRIORITY_DEFAULT);
@@ -205,7 +205,7 @@ impl Widgets<AppModel, ()> for AppWidgets {
 }
 
 pub enum AppMsg {
-    NewSlave,
+    NewSlave(WeakRef<ApplicationWindow>),
     DispatchInputEvent(InputEvent),
     PreferencesUpdated(PreferencesModel),
     ToggleRecording, 
@@ -238,7 +238,7 @@ impl AppUpdate for AppModel {
                 components.preferences.root_widget().present();
             },
             AppMsg::OpenKeybindingsWindow => todo!(),
-            AppMsg::NewSlave => {
+            AppMsg::NewSlave(app_window) => {
                 let mut ip_octets = self.get_preferences().borrow().get_default_slave_ipv4_address().octets();
                 let index = self.get_slaves().len() as u8;
                 ip_octets[3] = ip_octets[3].wrapping_add(index);
@@ -247,7 +247,7 @@ impl AppUpdate for AppModel {
                 let (slave_event_sender, slave_event_receiver) = MainContext::channel(PRIORITY_DEFAULT);
                 let slave_config = SlaveConfigModel::new(Ipv4Addr::from(ip_octets), *self.get_preferences().clone().borrow().get_default_slave_port(), video_port);
                 let slave = SlaveModel::new(MyComponent::new(slave_config, slave_event_sender), self.get_preferences().clone(), input_event_sender);
-                let component = MyComponent::new(slave, ());
+                let component = MyComponent::new(slave, app_window);
                 let component_sender = component.sender().clone();
                 input_event_receiver.attach(None,  clone!(@strong component_sender => move |event| {
                     component_sender.send(SlaveMsg::InputReceived(event)).unwrap();
