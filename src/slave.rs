@@ -1,16 +1,16 @@
-use std::{cell::{Cell, RefCell}, collections::HashMap, net::Ipv4Addr, path::PathBuf, rc::Rc, str::FromStr, sync::{Arc, Mutex}};
+use std::{cell::{Cell, RefCell}, collections::HashMap, net::Ipv4Addr, path::PathBuf, rc::Rc, str::FromStr, sync::{Arc, Mutex}, fmt::Debug};
 
 use fragile::Fragile;
 use glib::{MainContext, Object, PRIORITY_DEFAULT, Sender, Type, clone};
 
 use gstreamer as gst;
 use gst::{Pipeline, prelude::*};
-use gtk::{AboutDialog, Align, ApplicationWindow, Box as GtkBox, Button, CenterBox, CheckButton, Dialog, DialogFlags, Entry, Frame, Grid, Image, Inhibit, Label, ListBox, MenuButton, Orientation, Overlay, Popover, ResponseType, Revealer, RevealerTransitionType, ScrolledWindow, SelectionModel, Separator, SingleSelection, SpinButton, Stack, StringList, Switch, ToggleButton, Viewport, gdk_pixbuf::Pixbuf, gio::{Menu, MenuItem, MenuModel}, prelude::*};
+use gtk::{AboutDialog, Align, ApplicationWindow, Box as GtkBox, Button, CenterBox, CheckButton, Dialog, DialogFlags, Entry, Frame, Grid, Image, Inhibit, Label, ListBox, MenuButton, Orientation, Overlay, Popover, ResponseType, Revealer, RevealerTransitionType, ScrolledWindow, SelectionModel, Separator, SingleSelection, SpinButton, Stack, StringList, Switch, ToggleButton, Viewport, gdk_pixbuf::Pixbuf, gio::{Menu, MenuItem, MenuModel}, prelude::*, Picture};
 
 use adw::{ActionRow, ComboRow, HeaderBar, PreferencesGroup, PreferencesPage, PreferencesWindow, StatusPage, Window, prelude::*};
 
-use relm4::{AppUpdate, WidgetPlus, ComponentUpdate, Components, Model, RelmApp, RelmComponent, Widgets, actions::{ActionGroupName, ActionName, RelmAction, RelmActionGroup}, factory::{DynamicIndex, FactoryPrototype, FactoryVec, FactoryVecDeque, positions::GridPosition}, new_action_group, send};
-use relm4_macros::widget;
+use relm4::{AppUpdate, WidgetPlus, ComponentUpdate, Components, Model, RelmApp, RelmComponent, Widgets, actions::{ActionGroupName, ActionName, RelmAction, RelmActionGroup}, factory::{DynamicIndex, FactoryPrototype, FactoryVec, FactoryVecDeque, positions::GridPosition}, new_action_group, send, MicroWidgets, MicroModel, MicroComponent};
+use relm4_macros::{widget, micro_widget};
 
 use strum::IntoEnumIterator;
 use strum_macros::{EnumIter, EnumString as EnumFromString, Display as EnumToString};
@@ -23,17 +23,15 @@ use crate::prelude::ObjectExt;
 
 use derivative::*;
 
-lazy_static! {
-    pub static ref COMPONENTS: Fragile<RefCell<Vec<SlaveComponents>>> = Fragile::new(RefCell::new(Vec::new()));
-}
-
 #[tracker::track(pub)]
-#[derive(Debug, Derivative, Clone)]
+#[derive(Debug, Derivative)]
 #[derivative(Default)]
 pub struct SlaveModel {
-    pub index: usize,
     #[no_eq]
-    pub config: Rc<RefCell<SlaveConfigModel>>,
+    #[derivative(Default(value="MyComponent::new(Default::default(), MainContext::channel(PRIORITY_DEFAULT).0)"))]
+    pub config: MyComponent<SlaveConfigModel>,
+    #[no_eq]
+    pub video: MyComponent<SlaveVideoModel>,
     #[derivative(Default(value="Some(false)"))]
     pub connected: Option<bool>,
     #[derivative(Default(value="Some(false)"))]
@@ -44,8 +42,8 @@ pub struct SlaveModel {
     #[no_eq]
     pub input_system: Rc<InputSystem>,
     #[no_eq]
-    #[derivative(Default(value="Rc::new(MainContext::channel(PRIORITY_DEFAULT).0)"))]
-    pub input_event_sender: Rc<Sender<InputSourceEvent>>,
+    #[derivative(Default(value="MainContext::channel(PRIORITY_DEFAULT).0"))]
+    pub input_event_sender: Sender<InputSourceEvent>,
     pub slave_info_displayed: bool,
     #[no_eq]
     pub status: Arc<Mutex<HashMap<SlaveStatusClass, i16>>>,
@@ -79,21 +77,12 @@ impl SlaveStatusClass {
 const JOYSTICK_DISPLAY_THRESHOLD: i16 = 500;
 
 impl SlaveModel {
-    pub fn new(index: usize, config: SlaveConfigModel, preferences: Rc<RefCell<PreferencesModel>>, input_system: Rc<InputSystem>, sender: &Sender<SlaveMsg>) -> Self {
-        let (input_event_sender, input_event_receiver) = MainContext::channel(PRIORITY_DEFAULT);
-        let status_map = Arc::new(Mutex::new(HashMap::new()));
-        let sender = sender.clone();
-        input_event_receiver.attach(None, move |event| {
-            sender.send(SlaveMsg::SlaveInputReceived(index, event)).unwrap();
-            Continue(true)
-        });
+    pub fn new(config: MyComponent<SlaveConfigModel>, preferences: Rc<RefCell<PreferencesModel>>, input_event_sender: Sender<InputSourceEvent>) -> Self {
         Self {
-            index, 
-            config: Rc::new(RefCell::new(config)),
+            config,
             preferences,
-            input_system,
-            input_event_sender: Rc::new(input_event_sender),
-            status: status_map,
+            input_event_sender,
+            status: Arc::new(Mutex::new(HashMap::new())),
             ..Default::default()
         }
     }
@@ -118,14 +107,12 @@ pub enum VideoAlgorithm {
     Algorithm1, Algorithm2, Algorithm3, Algorithm4
 }
 
-pub fn input_sources_list_box(index: usize, input_source: &Option<InputSource>, input_system: &InputSystem, sender: &Sender<SlaveMsg>) -> ListBox {
+pub fn input_sources_list_box(input_source: &Option<InputSource>, input_system: &InputSystem, sender: &Sender<SlaveMsg>) -> ListBox {
     let sources = input_system.get_sources().unwrap();
     let list_box = ListBox::builder().build();
     let mut radio_button_group: Option<CheckButton> = None;
     for (source, name) in sources {
         let radio_button = CheckButton::builder().label(&name).build();
-        // let action_row = ActionRow::builder().title(&name).activatable_widget(&radio_button).build();
-        // action_row.add_prefix(&radio_button);
         let sender = sender.clone();
         radio_button.set_active(match input_source {
             Some(current_souce) => current_souce.eq(&source),
@@ -133,7 +120,7 @@ pub fn input_sources_list_box(index: usize, input_source: &Option<InputSource>, 
         });
         
         radio_button.connect_toggled(move |button| {
-            sender.send(SlaveMsg::SlaveSetInputSource(index, if button.is_active() { Some(source.clone()) } else { None } )).unwrap();
+            sender.send(SlaveMsg::SetInputSource(if button.is_active() { Some(source.clone()) } else { None } )).unwrap();
         });
         {
             let radio_button = radio_button.clone();
@@ -147,8 +134,8 @@ pub fn input_sources_list_box(index: usize, input_source: &Option<InputSource>, 
     list_box
 }
 
-#[widget(pub)]
-impl Widgets<SlaveModel, ()> for SlaveWidgets {
+#[micro_widget(pub)]
+impl MicroWidgets<SlaveModel> for SlaveWidgets {
     view! {
         vbox = GtkBox {
             put_data: args!("sender", sender.clone()),
@@ -165,9 +152,8 @@ impl Widgets<SlaveModel, ()> for SlaveWidgets {
                         set_sensitive: track!(model.changed(SlaveModel::connected()), model.connected !=None),
                         set_css_classes: &["circular"],
                         set_tooltip_text: Some("连接/断开连接"),
-                        put_data: args!("index", model.index),
                         connect_clicked(sender) => move |button| {
-                            send!(sender, SlaveMsg::SlaveToggleConnect(*button.get_data("index").unwrap()));
+                            send!(sender, SlaveMsg::ToggleConnect);
                         },
                     },
                     append = &Button {
@@ -175,10 +161,9 @@ impl Widgets<SlaveModel, ()> for SlaveWidgets {
                         set_sensitive: track!(model.changed(SlaveModel::polling()), model.polling !=None),
                         set_css_classes: &["circular"],
                         set_tooltip_text: Some("启动/停止视频"),
-                        put_data: args!("index", model.index),
                         connect_clicked(sender) => move |button| {
-                            send!(sender, SlaveMsg::SlaveTogglePolling(*button.get_data("index").unwrap()));
-                        }
+                            send!(sender, SlaveMsg::TogglePolling);
+                        },
                     },
                 },
                 set_center_widget = Some(&GtkBox) {
@@ -186,7 +171,7 @@ impl Widgets<SlaveModel, ()> for SlaveWidgets {
                     set_halign: Align::Center,
                     set_spacing: 1,
                     append = &Label {
-                        set_text: track!(model.changed(SlaveModel::config()), format!("{}:{}", model.config.borrow().get_ip(), model.config.borrow().get_port()).as_str()),
+                        set_text: track!(model.changed(SlaveModel::config()), format!("{}:{}", model.config.model().get_ip(), model.config.model().get_port()).as_str()),
                     },
                     append = &MenuButton {
                         set_icon_name: "input-gaming-symbolic",
@@ -206,14 +191,13 @@ impl Widgets<SlaveModel, ()> for SlaveWidgets {
                                         set_icon_name: "view-refresh-symbolic",
                                         set_css_classes: &["circular"],
                                         set_tooltip_text: Some("刷新输入设备"),
-                                        put_data: args!("index", model.index),
                                         connect_clicked(sender) => move |button| {
-                                            send!(sender, SlaveMsg::SlaveUpdateInputSources(*button.get_data("index").unwrap()));
+                                            send!(sender, SlaveMsg::UpdateInputSources);
                                         },
                                     },
                                 },
                                 append = &Frame {
-                                    set_child: track!(model.changed(SlaveModel::input_system()), Some(&input_sources_list_box(model.index, &model.input_source, &model.input_system ,&sender))),
+                                    set_child: track!(model.changed(SlaveModel::input_system()), Some(&input_sources_list_box(&model.input_source, &model.input_system ,&sender))),
                                 },
                                 
                             },
@@ -228,8 +212,8 @@ impl Widgets<SlaveModel, ()> for SlaveWidgets {
                         set_icon_name: "emblem-system-symbolic",
                         set_css_classes: &["circular"],
                         set_tooltip_text: Some("机位设置"),
-                        put_data: args!("sender", components.config.sender().clone()),
-                        connect_active_notify(sender) => move |button| {
+                        put_data: args!("sender", model.config.sender().clone()),
+                        connect_active_notify => move |button| {
                             let sender = button.get_data::<Sender<SlaveConfigMsg>>("sender").unwrap().clone();
                             send!(sender, SlaveConfigMsg::TogglePresented);
                         },
@@ -239,7 +223,7 @@ impl Widgets<SlaveModel, ()> for SlaveWidgets {
             append = &GtkBox {
                 set_orientation: Orientation::Horizontal,
                 append = &Overlay {
-                    set_child: Some(components.video.root_widget()),
+                    set_child: Some(model.video.root_widget()),
                     add_overlay = &GtkBox {
                         set_valign: Align::Start,
                         set_halign: Align::End,
@@ -263,9 +247,8 @@ impl Widgets<SlaveModel, ()> for SlaveWidgets {
                                             set_icon_name: watch!(Some(if model.slave_info_displayed { "go-down-symbolic" } else { "go-next-symbolic" })),
                                         },
                                     },
-                                    put_data: args!("index", model.index),
                                     connect_clicked(sender) => move |button| {
-                                        send!(sender, SlaveMsg::SlaveToggleDisplayInfo(*button.get_data("index").unwrap()));
+                                        send!(sender, SlaveMsg::ToggleDisplayInfo);
                                     },
                                 },
                                 append = &Revealer {
@@ -360,7 +343,7 @@ impl Widgets<SlaveModel, ()> for SlaveWidgets {
                         }
                     }
                 }, 
-                append: components.config.root_widget(),
+                append: model.config.root_widget(),
             },
         }
     }
@@ -372,30 +355,142 @@ impl std::fmt::Debug for SlaveWidgets {
     }
 }
 
-type SlaveMsg = AppMsg;
-
-impl Model for SlaveModel {
-    type Msg = SlaveMsg;
-    type Widgets = SlaveWidgets;
-    type Components = SlaveComponents;
+pub enum SlaveMsg {
+    ConfigUpdated,
+    ToggleConnect,
+    TogglePolling,
+    SetInputSource(Option<InputSource>),
+    UpdateInputSources,
+    ToggleDisplayInfo,
+    InputReceived(InputSourceEvent),
 }
 
-impl FactoryPrototype for SlaveModel {
-    type Factory = FactoryVec<Self>;
+impl MicroModel for SlaveModel {
+    type Msg = SlaveMsg;
     type Widgets = SlaveWidgets;
+    type Data = ();
+    fn update(&mut self, msg: SlaveMsg, data: &(), sender: Sender<SlaveMsg>) {
+        match msg {
+            SlaveMsg::ConfigUpdated => {
+                self.get_mut_config();
+            },
+            SlaveMsg::ToggleConnect => {
+                self.set_connected(None);
+            },
+            SlaveMsg::TogglePolling => {
+                match self.get_polling() {
+                    Some(true) =>{
+                        self.video.send(SlaveVideoMsg::SetPipeline(None)).unwrap();
+                        self.set_polling(Some(false));
+                    },
+                    Some(false) => {
+                        self.video.send(SlaveVideoMsg::SetPipeline(Some(video::create_pipeline(*self.get_config().model().get_video_port()).unwrap()))).unwrap();
+                        self.set_polling(Some(true));
+                    },
+                    None => (),
+                }
+            },
+            SlaveMsg::SetInputSource(source) => {
+                self.set_input_source(source);
+            },
+            SlaveMsg::UpdateInputSources => {
+                self.set_input_system(self.get_input_system().clone());
+            },
+            SlaveMsg::ToggleDisplayInfo => {
+                self.set_slave_info_displayed(!*self.get_slave_info_displayed());
+            },
+            SlaveMsg::InputReceived(event) => {
+                match event {
+                    InputSourceEvent::ButtonChanged(button, pressed) => {
+                        if let Some(status_class) = SlaveStatusClass::from_button(button) {
+                            if pressed {
+                                self.set_target_status(&status_class, !(self.get_target_status(&status_class) != 0) as i16);
+                            }
+                        }
+                    },
+                    InputSourceEvent::AxisChanged(axis, value) => {
+                        if let Some(status_class) = SlaveStatusClass::from_axis(axis) {
+                            self.set_target_status(&status_class, value.saturating_mul(if axis == 1 || axis == 3 { -1 } else { 1 }));
+                        }
+                    },
+                }
+                self.set_status(self.get_status().clone());
+            },
+        }
+    }
+}
+
+pub struct MyComponent<T: MicroModel> {
+    pub component: MicroComponent<T>,
+}
+
+impl <Model> MyComponent<Model>
+    where
+Model::Widgets: MicroWidgets<Model> + 'static,
+Model::Msg: 'static,
+Model::Data: 'static,
+Model: MicroModel + 'static,  {
+    fn model(&self) -> std::cell::Ref<'_, Model> {
+        self.component.model().unwrap()
+    }
+    fn model_mut(&self) -> std::cell::RefMut<'_, Model> {
+        self.component.model_mut().unwrap()
+    }
+    fn widgets(&self) -> std::cell::RefMut<'_, Model::Widgets> {
+        self.component.widgets().unwrap()
+    }
+}
+
+impl <T: MicroModel> std::ops::Deref for MyComponent<T> {
+    type Target = MicroComponent<T>;
+    fn deref(&self) -> &MicroComponent<T> {
+        &self.component
+    }
+}
+
+
+
+impl <T: MicroModel> Debug for MyComponent<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MyComponent").finish()
+    }
+}
+
+impl <Model> Default for MyComponent<Model>
+where
+    Model::Widgets: MicroWidgets<Model> + 'static,
+    Model::Msg: 'static,
+    Model::Data: Default + 'static,
+    Model: MicroModel + Default + 'static, {
+    fn default() -> Self {
+        MyComponent { component: MicroComponent::new(Model::default(), Model::Data::default()) }
+    }
+}
+
+impl <Model> MyComponent<Model>
+where
+    Model::Widgets: MicroWidgets<Model> + 'static,
+    Model::Msg: 'static,
+    Model::Data: 'static,
+    Model: MicroModel + 'static, {
+    pub fn new(model: Model, data: Model::Data) -> MyComponent<Model> {
+        MyComponent { component: MicroComponent::new(model, data) }
+    }
+}
+
+impl FactoryPrototype for MyComponent<SlaveModel> {
+    type Factory = FactoryVec<Self>;
+    type Widgets = GtkBox;
     type Root = GtkBox;
     type View = Grid;
-    type Msg = SlaveMsg;
+    type Msg = AppMsg;
 
     fn init_view(
         &self,
         index: &usize,
-        sender: Sender<SlaveMsg>,
-    ) -> SlaveWidgets {
-        let components = SlaveComponents::init_components(self, sender.clone());
-        let widgets = Widgets::init_view(self, &components, sender.clone());
-        COMPONENTS.get().borrow_mut().push(components);
-        widgets
+        sender: Sender<AppMsg>,
+    ) -> GtkBox {
+        self.component.root_widget().clone()
     }
 
     fn position(
@@ -416,22 +511,13 @@ impl FactoryPrototype for SlaveModel {
     fn view(
         &self,
         index: &usize,
-        widgets: &SlaveWidgets,
+        widgets: &GtkBox,
     ) {
-        SlaveWidgets::view(unsafe {
-            let const_ptr = widgets as *const SlaveWidgets;
-            let mut_ptr = const_ptr as *mut SlaveWidgets;
-            &mut *mut_ptr
-        }, self, widgets.vbox.get_data::<Sender<SlaveMsg>>("sender").unwrap().clone());
-        
-        if let Some(components) = COMPONENTS.get().borrow().get(*index) {
-            components.config.send(SlaveConfigMsg::Dummy).unwrap();
-            components.video.send(SlaveVideoMsg::Dummy).unwrap()
-        }
+        self.component.update_view().unwrap();
     }
 
-    fn root_widget(widgets: &SlaveWidgets) -> &GtkBox {
-        &widgets.vbox
+    fn root_widget(widgets: &GtkBox) -> &GtkBox {
+        widgets
     }
 }
 
@@ -439,7 +525,6 @@ impl FactoryPrototype for SlaveModel {
 #[derive(Debug, Derivative, PartialEq, Clone)]
 #[derivative(Default)]
 pub struct SlaveConfigModel {
-    index: usize,
     pub presented: bool,
     #[derivative(Default(value="PreferencesModel::default().default_slave_ipv4_address"))]
     pub ip: Ipv4Addr,
@@ -451,30 +536,44 @@ pub struct SlaveConfigModel {
 }
 
 impl SlaveConfigModel {
-    pub fn new(index: usize, ip: Ipv4Addr, port: u16, video_port: u16) -> Self {
+    pub fn new(ip: Ipv4Addr, port: u16, video_port: u16) -> Self {
         Self {
-            index, ip, port, video_port,
+            ip, port, video_port,
             ..Default::default()
         }
     }
 }
 
-impl Model for SlaveConfigModel {
+impl MicroModel for SlaveConfigModel {
     type Msg = SlaveConfigMsg;
     type Widgets = SlaveConfigWidgets;
-    type Components = ();
+    type Data = Sender<SlaveMsg>;
+    fn update(&mut self, msg: SlaveConfigMsg, parent_sender: &Sender<SlaveMsg>, sender: Sender<SlaveConfigMsg>) {
+         match msg {
+             SlaveConfigMsg::SetIp(ip) => self.set_ip(ip),
+             SlaveConfigMsg::SetPort(port) => self.set_port(port),
+             SlaveConfigMsg::SetVideoPort(port) => self.set_video_port(port),
+             SlaveConfigMsg::TogglePresented =>self.set_presented(!self.get_presented()),
+         }
+         send!(parent_sender, SlaveMsg::ConfigUpdated);
+    }
+}
+
+impl std::fmt::Debug for SlaveConfigWidgets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.root_widget().fmt(f)
+    }
 }
 
 pub enum SlaveConfigMsg {
-    Dummy, 
     SetIp(Ipv4Addr),
     SetPort(u16),
     SetVideoPort(u16),
     TogglePresented,
 }
 
-#[widget(pub)]
-impl Widgets<SlaveConfigModel, SlaveModel> for SlaveConfigWidgets {
+#[micro_widget(pub)]
+impl MicroWidgets<SlaveConfigModel> for SlaveConfigWidgets {
     view! {
         window = Revealer {
             set_reveal_child: watch!(model.presented), //track!(model.changed(SlaveConfigModel::window_presented()), model.window_presented),
@@ -569,37 +668,10 @@ impl Widgets<SlaveConfigModel, SlaveModel> for SlaveConfigWidgets {
     }
 }
 
-impl ComponentUpdate<SlaveModel> for SlaveConfigModel {
-    fn init_model(parent_model: &SlaveModel) -> Self {
-        parent_model.config.borrow().clone()
-    }
-
-    fn update(
-        &mut self,
-        msg: SlaveConfigMsg,
-        components: &(),
-        sender: Sender<SlaveConfigMsg>,
-        parent_sender: Sender<SlaveMsg>,
-    ) {
-        let mut config_updated = true;
-        match msg {
-            SlaveConfigMsg::SetIp(ip) => self.set_ip(ip),
-            SlaveConfigMsg::SetPort(port) => self.set_port(port),
-            SlaveConfigMsg::SetVideoPort(port) => self.set_video_port(port),
-            SlaveConfigMsg::TogglePresented =>self.set_presented(!self.get_presented()),
-            SlaveConfigMsg::Dummy => config_updated = false,
-        }
-        if config_updated {
-            send!(parent_sender, SlaveMsg::SlaveConfigUpdated(self.index, self.clone()));
-        }
-    }
-}
-
 #[tracker::track(pub)]
 #[derive(Debug, Derivative, PartialEq)]
 #[derivative(Default)]
 pub struct SlaveVideoModel {
-    index: usize, 
     #[no_eq]
     pub pixbuf: Option<Pixbuf>,
     #[no_eq]
@@ -610,61 +682,18 @@ pub struct SlaveVideoModel {
 }
 
 pub enum SlaveVideoMsg {
-    Dummy,
     SetPipeline(Option<Pipeline>),
     SetPixbuf(Option<Pixbuf>),
-    SetRecording(bool),
+    StartRecord(String),
+    StopRecord,
 }
 
-impl Model for SlaveVideoModel {
+impl MicroModel for SlaveVideoModel {
     type Msg = SlaveVideoMsg;
     type Widgets = SlaveVideoWidgets;
-    type Components = ();
-}
+    type Data = ();
 
-#[widget(pub)]
-impl Widgets<SlaveVideoModel, SlaveModel> for SlaveVideoWidgets {
-    view! {
-        frame = GtkBox {
-            append = &Stack {
-                set_vexpand: true,
-                set_hexpand: true,
-                add_child = &StatusPage {
-                    set_icon_name: Some("help-browser-symbolic"),
-                    set_title: "无信号",
-                    set_description: Some("请点击上方按钮启动视频拉流"),
-                    set_visible: track!(model.changed(SlaveVideoModel::pixbuf()), model.pixbuf == None),
-                },
-                add_child = &Image {
-                    set_hexpand: true,
-                    set_vexpand: true,
-                    set_from_pixbuf: track!(model.changed(SlaveVideoModel::pixbuf()), match &model.pixbuf {
-                        Some(pixbuf) =>Some(&pixbuf),
-                        None => None,
-                    }),
-                },
-            },
-        }
-    }
-}
-
-impl ComponentUpdate<SlaveModel> for SlaveVideoModel {
-    fn init_model(parent_model: &SlaveModel) -> Self {
-        Self {
-            index: *parent_model.get_index(),
-            config: parent_model.get_config().clone(),
-            preferences: parent_model.get_preferences().clone(),
-            ..Default::default()
-        }
-    }
-
-    fn update(
-        &mut self,
-        msg: SlaveVideoMsg,
-        components: &(),
-        sender: Sender<SlaveVideoMsg>,
-        parent_sender: Sender<SlaveMsg>,
-    ) {
+    fn update(&mut self, msg: SlaveVideoMsg, data: &(), sender: Sender<SlaveVideoMsg>) {
         match msg {
             SlaveVideoMsg::SetPipeline(pipeline) => {
                 match pipeline {
@@ -679,7 +708,6 @@ impl ComponentUpdate<SlaveModel> for SlaveVideoModel {
                             });
                             pipeline.set_state(gst::State::Playing);
                             self.pipeline = Some(pipeline);
-                            
                         }
                     },
                     None => {
@@ -690,52 +718,59 @@ impl ComponentUpdate<SlaveModel> for SlaveVideoModel {
                     },
                 }
             },
-            SlaveVideoMsg::Dummy => (),
             SlaveVideoMsg::SetPixbuf(pixbuf) => self.set_pixbuf(pixbuf),
-            SlaveVideoMsg::SetRecording(recording) => {
-                dbg!(recording);
-                match &self.pipeline {
-                    Some(pipeline) => {
-                        if recording {
-                            let mut pathbuf = PathBuf::from_str(self.preferences.borrow().get_video_save_path()).unwrap();
-                            pathbuf.push(format!("{}.mkv", self.index + 1));
-                            println!("{}", pathbuf.to_str().unwrap());
-                            let elements = video::create_queue_to_file(pathbuf.to_str().unwrap()).unwrap();
-                            let pad = video::connect_elements_to_pipeline(pipeline, &elements).unwrap();
-                            pipeline.set_state(gst::State::Playing).unwrap(); // 添加元素后会自动暂停，需要手动重新开始播放
-                            self.record_handle = Some((pad, Vec::from(elements)));
-                        } else {
-                            match &self.record_handle {
-                                Some((teepad, elements)) => {
-                                    video::disconnect_elements_to_pipeline(pipeline, teepad, elements).unwrap();
-                                },
-                                None => {},
-                            }
-                        }
-                    },
-                    None => {},
+            SlaveVideoMsg::StartRecord(file_name) => {
+                if let Some(pipeline) = &self.pipeline {
+                    let mut pathbuf = PathBuf::from_str(self.preferences.borrow().get_video_save_path()).unwrap();
+                    pathbuf.push(format!("{}.mkv", file_name));
+                    println!("{}", pathbuf.to_str().unwrap());
+                    let elements = video::create_queue_to_file(pathbuf.to_str().unwrap()).unwrap();
+                    let pad = video::connect_elements_to_pipeline(pipeline, &elements).unwrap();
+                    pipeline.set_state(gst::State::Playing).unwrap(); // 添加元素后会自动暂停，需要手动重新开始播放
+                    self.record_handle = Some((pad, Vec::from(elements)));
+                }
+            },
+            SlaveVideoMsg::StopRecord => {
+                if let Some(pipeline) = &self.pipeline {
+                    if let Some((teepad, elements)) = &self.record_handle{
+                        video::disconnect_elements_to_pipeline(pipeline, teepad, elements).unwrap();
+                    }
                 }
             },
         }
     }
 }
 
-pub struct SlaveComponents {
-    pub config: RelmComponent<SlaveConfigModel, SlaveModel>,
-    pub video: RelmComponent<SlaveVideoModel, SlaveModel>,
+impl std::fmt::Debug for SlaveVideoWidgets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.root_widget().fmt(f)
+    }
 }
 
-impl Components<SlaveModel> for SlaveComponents {
-    fn init_components(parent_model: &SlaveModel, parent_sender: Sender<SlaveMsg>)  -> Self {
-        SingleSelection::new(Some(&StringList::new(&[])));
-        Self {
-            config: RelmComponent::new(parent_model, parent_sender.clone()),
-            video: RelmComponent::new(parent_model, parent_sender.clone()),
+#[micro_widget(pub)]
+impl MicroWidgets<SlaveVideoModel> for SlaveVideoWidgets {
+    view! {
+        frame = GtkBox {
+            append = &Stack {
+                set_vexpand: true,
+                set_hexpand: true,
+                add_child = &StatusPage {
+                    set_icon_name: Some("help-browser-symbolic"),
+                    set_title: "无信号",
+                    set_description: Some("请点击上方按钮启动视频拉流"),
+                    set_visible: track!(model.changed(SlaveVideoModel::pixbuf()), model.pixbuf == None),
+                },
+                add_child = &Picture {
+                    set_hexpand: true,
+                    set_vexpand: true,
+                    set_can_shrink: true,
+                    set_pixbuf: track!(model.changed(SlaveVideoModel::pixbuf()), match &model.pixbuf {
+                        Some(pixbuf) => Some(&pixbuf),
+                        None => None,
+                    }),
+                },
+            },
         }
     }
-
-    fn connect_parent(&mut self, _parent_widgets: &SlaveWidgets) {
-        self.config.connect_parent(_parent_widgets);
-        self.video.connect_parent(_parent_widgets);
-    }
 }
+

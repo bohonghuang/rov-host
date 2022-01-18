@@ -26,7 +26,7 @@ impl Default for VideoEncoder {
 }
 
 fn get_data_path() -> PathBuf {
-    const app_dir_name: &str = "RovHost";
+    const app_dir_name: &str = "rovhost";
     let mut data_path = dirs::data_local_dir().expect("无法找到本地数据文件夹");
     data_path.push(app_dir_name);
     if !data_path.exists() {

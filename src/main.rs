@@ -14,6 +14,7 @@ use preferences::PreferencesModel;
 use relm4::{AppUpdate, ComponentUpdate, Components, Model, RelmApp, RelmComponent, Widgets, actions::{ActionGroupName, ActionName, RelmAction, RelmActionGroup}, factory::{DynamicIndex, FactoryPrototype, FactoryVec, FactoryVecDeque, positions::GridPosition}, send, new_stateful_action, new_stateless_action, new_action_group};
 use relm4_macros::widget;
 use lazy_static::{__Deref, lazy_static};
+use slave::{MyComponent, SlaveMsg};
 
 mod preferences;
 mod slave;
@@ -69,7 +70,7 @@ pub struct AppModel {
     recording: Option<bool>,
     #[no_eq]
     #[derivative(Default(value="FactoryVec::new()"))]
-    slaves: FactoryVec<SlaveModel>,
+    slaves: FactoryVec<MyComponent<SlaveModel>>,
     // #[no_eq]
     // slave_input_event_senders: Rc<RefCell<Vec<Sender<InputSourceEvent>>>>,
     #[no_eq]
@@ -205,13 +206,6 @@ impl Widgets<AppModel, ()> for AppWidgets {
 
 pub enum AppMsg {
     NewSlave,
-    SlaveConfigUpdated(usize, SlaveConfigModel),
-    SlaveToggleConnect(usize),
-    SlaveTogglePolling(usize),
-    SlaveSetInputSource(usize, Option<InputSource>),
-    SlaveUpdateInputSources(usize),
-    SlaveToggleDisplayInfo(usize),
-    SlaveInputReceived(usize, InputSourceEvent),
     DispatchInputEvent(InputEvent),
     PreferencesUpdated(PreferencesModel),
     ToggleRecording, 
@@ -249,45 +243,46 @@ impl AppUpdate for AppModel {
                 let index = self.get_slaves().len() as u8;
                 ip_octets[3] = ip_octets[3].wrapping_add(index);
                 let video_port = self.get_preferences().borrow().get_default_local_video_port().wrapping_add(index as u16);
-                let slave = SlaveModel::new(index as usize, SlaveConfigModel::new(index as usize, Ipv4Addr::from(ip_octets), *self.get_preferences().clone().borrow().get_default_slave_port(), video_port), self.get_preferences().clone(), self.input_system.clone(), &sender);
-                self.get_mut_slaves().push(slave);
+                let (input_event_sender, input_event_receiver) = MainContext::channel(PRIORITY_DEFAULT);
+                let (slave_event_sender, slave_event_receiver) = MainContext::channel(PRIORITY_DEFAULT);
+                let slave_config = SlaveConfigModel::new(Ipv4Addr::from(ip_octets), *self.get_preferences().clone().borrow().get_default_slave_port(), video_port);
+                let slave = SlaveModel::new(MyComponent::new(slave_config, slave_event_sender), self.get_preferences().clone(), input_event_sender);
+                let component = MyComponent::new(slave, ());
+                let component_sender = component.sender().clone();
+                input_event_receiver.attach(None,  clone!(@strong component_sender => move |event| {
+                    component_sender.send(SlaveMsg::InputReceived(event)).unwrap();
+                    Continue(true)
+                }));
+                slave_event_receiver.attach(None, clone!(@strong component_sender => move |event| {
+                    component_sender.send(event).unwrap();
+                    Continue(true)
+                }));
+                self.get_mut_slaves().push(component);
                 self.set_recording(Some(false));
             },
             AppMsg::PreferencesUpdated(preferences) => {
                 *self.get_preferences().borrow_mut() = preferences;
                 self.set_preferences(self.get_preferences().clone());
             },
-            AppMsg::SlaveConfigUpdated(index, config) =>
-                if let Some(slave) = self.get_mut_slaves().get_mut(index) {
-                    *slave.get_config().borrow_mut() = config;
-                    slave.set_config(slave.get_config().clone());
-                },
-            AppMsg::SlaveToggleConnect(index) => {
-                if let Some(slave) = self.get_mut_slaves().get_mut(index) {
-                    slave.set_connected(None);
-                }
-            },
-            AppMsg::SlaveTogglePolling(index) => {
-                if let Some(slave) = self.get_mut_slaves().get_mut(index) {
-                    if let Some(components) = slave::COMPONENTS.get().borrow_mut().get(index) {
-                        match slave.get_polling() {
-                            Some(true) =>{
-                                components.video.send(SlaveVideoMsg::SetPipeline(None)).unwrap();
-                                slave.set_polling(Some(false));
-                            },
-                            Some(false) => {
-                                components.video.send(SlaveVideoMsg::SetPipeline(Some(video::create_pipeline(*slave.get_config().borrow().get_video_port()).unwrap()))).unwrap();
-                                slave.set_polling(Some(true));
-                            },
-                            None => (),
+            AppMsg::DispatchInputEvent(InputEvent(source, event)) => {
+                for slave in self.slaves.iter() {
+                    let slave_model = slave.model().unwrap();
+                    if let Some(target_input_source) = slave_model.get_input_source() {
+                        if target_input_source.eq(&source) {
+                            slave_model.input_event_sender.send(event.clone()).unwrap();
                         }
                     }
                 }
             },
             AppMsg::ToggleRecording => match self.recording {
                 Some(recording) => {
-                    for components in slave::COMPONENTS.get().borrow().deref() {
-                        components.video.send(SlaveVideoMsg::SetRecording(!recording)).unwrap();
+                    for (index, component) in self.slaves.iter().enumerate() {
+                        let model = component.model().unwrap();
+                        if recording {
+                            model.get_video().send(SlaveVideoMsg::StopRecord).unwrap();
+                        } else {
+                            model.get_video().send(SlaveVideoMsg::StartRecord((index + 1).to_string())).unwrap();
+                        }
                     }
                     self.set_recording(Some(!recording));
                 },
@@ -297,56 +292,13 @@ impl AppUpdate for AppModel {
                 let style_manager = StyleManager::default();
                 style_manager.set_color_scheme(if style_manager.is_dark() { ColorScheme::PreferLight } else { ColorScheme::ForceDark });
             },
-            AppMsg::SlaveSetInputSource(index, source) => {
-                if let Some(slave) = self.get_mut_slaves().get_mut(index) {
-                    slave.set_input_source(source);
-                }
-            },
-            AppMsg::SlaveUpdateInputSources(index) => {
-                if let Some(slave) = self.get_mut_slaves().get_mut(index) {
-                    slave.set_input_system(slave.get_input_system().clone());
-                }
-            },
-            AppMsg::DispatchInputEvent(InputEvent(source, event)) => {
-                for slave in self.slaves.iter() {
-                    if let Some(target_input_source) = slave.get_input_source() {
-                        if target_input_source.eq(&source) {
-                            slave.input_event_sender.send(event.clone()).unwrap();
-                        }
-                    }
-                }
-            },
             AppMsg::StopInputSystem => {
                 self.input_system.stop();
             },
-            AppMsg::SlaveToggleDisplayInfo(index) => {
-                if let Some(slave) = self.slaves.get_mut(index) {
-                    slave.set_slave_info_displayed(!*slave.get_slave_info_displayed());
-                }
-            },
-            AppMsg::SlaveInputReceived(index, event) => {
-                if let Some(slave) = self.slaves.get_mut(index) {
-                    match event {
-                        InputSourceEvent::ButtonChanged(button, pressed) => {
-                            if let Some(status_class) = SlaveStatusClass::from_button(button) {
-                                if pressed {
-                                    slave.set_target_status(&status_class, !(slave.get_target_status(&status_class) != 0) as i16);
-                                }
-                            }
-                        },
-                        InputSourceEvent::AxisChanged(axis, value) => {
-                            if let Some(status_class) = SlaveStatusClass::from_axis(axis) {
-                                slave.set_target_status(&status_class, value.saturating_mul(if axis == 1 || axis == 3 { -1 } else { 1 }));
-                            }
-                        },
-                    }
-                    slave.set_status(slave.get_status().clone());
-                }
-            },
         }
-        for i in 0..self.slaves.len() {
-            self.get_mut_slaves().get_mut(i).unwrap().reset();
-        }
+        // for i in 0..self.slaves.len() {
+        //     self.get_mut_slaves().get_mut(i).unwrap().reset();
+        // }
         true
     }
 }

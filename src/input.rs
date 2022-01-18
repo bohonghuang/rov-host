@@ -179,7 +179,3 @@ impl InputSystem {
         *self.running.lock().unwrap() = false;
     }
 }
-
-struct InputModel {
-    
-}
