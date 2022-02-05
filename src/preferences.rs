@@ -10,20 +10,12 @@ use relm4::{AppUpdate, ComponentUpdate, Components, Model, RelmApp, RelmComponen
 use relm4_macros::widget;
 
 use strum::IntoEnumIterator;
-use strum_macros::{EnumIter, EnumString as EnumFromString, Display as EnumToString};
 
-use crate::{AppModel, AppMsg};
+use crate::{AppModel, AppMsg, video::VideoDecoder};
 
 use derivative::*;
 
-#[derive(EnumIter, EnumToString, EnumFromString, PartialEq, Clone, Debug)]
-pub enum VideoEncoder {
-    Copy, H264, H265, WEBM
-}
-
-impl Default for VideoEncoder {
-    fn default() -> Self { Self::Copy }
-}
+use crate::video::VideoEncoder;
 
 fn get_data_path() -> PathBuf {
     const app_dir_name: &str = "rovhost";
@@ -62,6 +54,9 @@ pub struct PreferencesModel {
     pub default_local_video_port: u16,
     #[derivative(Default(value="60"))]
     pub default_input_sending_rate: u16,
+    #[derivative(Default(value="true"))]
+    pub default_keep_video_display_ratio: bool,
+    pub default_video_decoder: VideoDecoder,
 }
 
 pub enum PreferencesMsg {
@@ -72,6 +67,8 @@ pub enum PreferencesMsg {
     SetInitialSlaveNum(u8),
     SetDefaultLocalVideoPort(u16),
     SetInputSendingRate(u16),
+    SetDefaultKeepVideoDisplayRatio(bool),
+    SetDefaultVideoDecoder(VideoDecoder),
 }
 
 impl Model for PreferencesModel {
@@ -88,6 +85,7 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
             set_transient_for: parent!(Some(&parent_widgets.app_window)),
             set_destroy_with_parent: true,
             set_modal: true,
+            set_search_enabled: false,
             connect_close_request(sender) => move |window| {
                 window.hide();
                 Inhibit(true)
@@ -105,7 +103,7 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                             set_value: track!(model.changed(PreferencesModel::initial_slave_num()), model.initial_slave_num as f64),
                             set_digits: 0,
                             set_valign: Align::Center,
-                            connect_changed(sender) => move |button| {
+                            connect_value_changed(sender) => move |button| {
                                 send!(sender, PreferencesMsg::SetInitialSlaveNum(button.value() as u8));
                             }
                         }
@@ -139,7 +137,7 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                             set_value: track!(model.changed(PreferencesModel::default_slave_port()), model.default_slave_port as f64),
                             set_digits: 0,
                             set_valign: Align::Center,
-                            connect_changed(sender) => move |button| {
+                            connect_value_changed(sender) => move |button| {
                                 send!(sender, PreferencesMsg::SetSlaveDefaultPort(button.value() as u16));
                             }
                         },
@@ -169,7 +167,7 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                             set_value: track!(model.changed(PreferencesModel::default_input_sending_rate()), model.default_input_sending_rate as f64),
                             set_digits: 0,
                             set_valign: Align::Center,
-                            connect_changed(sender) => move |button| {
+                            connect_value_changed(sender) => move |button| {
                                 send!(sender, PreferencesMsg::SetInputSendingRate(button.value() as u16));
                             }
                         },
@@ -183,6 +181,23 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                 set_title: "视频",
                 set_icon_name: Some("emblem-videos-symbolic"),
                 add = &PreferencesGroup {
+                    set_title: "显示",
+                    set_description: Some("上位机的显示的画面设置"),
+                    add = &ActionRow {
+                        set_title: "默认保持长宽比",
+                        set_subtitle: "在改变窗口大小的时是否保持画面比例，这可能导致画面无法全屏",
+                        add_suffix: default_keep_video_display_ratio_switch = &Switch {
+                            set_active: track!(model.changed(PreferencesModel::default_keep_video_display_ratio()), model.default_keep_video_display_ratio),
+                            set_valign: Align::Center,
+                            connect_state_set(sender) => move |switch, state| {
+                                send!(sender, PreferencesMsg::SetDefaultKeepVideoDisplayRatio(state));
+                                Inhibit(false)
+                            }
+                        },
+                        set_activatable_widget: Some(&default_keep_video_display_ratio_switch),
+                    },
+                },
+                add = &PreferencesGroup {
                     set_title: "拉流",
                     set_description: Some("从下位机拉取视频流的选项"),
                     add = &ActionRow {
@@ -192,11 +207,26 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                             set_value: track!(model.changed(PreferencesModel::default_local_video_port()), model.default_local_video_port as f64),
                             set_digits: 0,
                             set_valign: Align::Center,
-                            connect_changed(sender) => move |button| {
+                            connect_value_changed(sender) => move |button| {
                                 send!(sender, PreferencesMsg::SetDefaultLocalVideoPort(button.value() as u16));
                             }
                         },
-                    }
+                    },
+                    add = &ComboRow {
+                        set_title: "默认解码器",
+                        set_subtitle: "拉流时使用的解码器",
+                        set_model: Some(&{
+                            let model = StringList::new(&[]);
+                            for value in VideoDecoder::iter() {
+                                model.append(&value.to_string());
+                            }
+                            model
+                        }),
+                        set_selected: track!(model.changed(PreferencesModel::default_video_decoder()), VideoDecoder::iter().position(|x| x == model.default_video_decoder).unwrap() as u32),
+                        connect_selected_notify(sender) => move |row| {
+                            send!(sender, PreferencesMsg::SetDefaultVideoDecoder(VideoDecoder::iter().nth(row.selected() as usize).unwrap()))
+                        }
+                    },
                 },
                 add = &PreferencesGroup {
                     set_title: "录制",
@@ -242,13 +272,15 @@ impl ComponentUpdate<AppModel> for PreferencesModel {
         parent_sender: Sender<AppMsg>,
     ) {
         match msg {
-            PreferencesMsg::SetVideoSavePath(path) => self.video_save_path = path,
-            PreferencesMsg::SetVideoEncoder(encoder) => self.video_encoder = encoder,
-            PreferencesMsg::SetSlaveDefaultIpv4Address(address) => self.default_slave_ipv4_address = address,
-            PreferencesMsg::SetSlaveDefaultPort(port) => self.default_slave_port = port,
-            PreferencesMsg::SetInitialSlaveNum(num) => self.initial_slave_num = num,
-            PreferencesMsg::SetDefaultLocalVideoPort(port) => self.default_local_video_port = port,
-            PreferencesMsg::SetInputSendingRate(rate) => self.default_input_sending_rate = rate,
+            PreferencesMsg::SetVideoSavePath(path) => self.set_video_save_path(path),
+            PreferencesMsg::SetVideoEncoder(encoder) => self.set_video_encoder(encoder),
+            PreferencesMsg::SetSlaveDefaultIpv4Address(address) => self.set_default_slave_ipv4_address(address),
+            PreferencesMsg::SetSlaveDefaultPort(port) => self.set_default_slave_port(port),
+            PreferencesMsg::SetInitialSlaveNum(num) => self.set_initial_slave_num(num),
+            PreferencesMsg::SetDefaultLocalVideoPort(port) => self.set_default_local_video_port(port),
+            PreferencesMsg::SetInputSendingRate(rate) => self.set_default_input_sending_rate(rate),
+            PreferencesMsg::SetDefaultKeepVideoDisplayRatio(value) => self.set_default_keep_video_display_ratio(value),
+            PreferencesMsg::SetDefaultVideoDecoder(decoder) => self.set_default_video_decoder(decoder),
         }
         send!(parent_sender, AppMsg::PreferencesUpdated(self.clone()));
     }

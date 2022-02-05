@@ -22,6 +22,7 @@ mod components;
 mod prelude;
 mod video;
 mod input;
+mod graph_view;
 
 use crate::{preferences::PreferencesMsg, slave::{SlaveConfigModel, SlaveConfigMsg, SlaveModel, SlaveStatusClass, SlaveVideoMsg}};
 
@@ -136,22 +137,29 @@ impl Widgets<AppModel, ()> for AppWidgets {
                         }
                     },
                     pack_end = &Button {
-                        set_icon_name: "window-new-symbolic",
+                        set_icon_name: "list-remove-symbolic",
+                        set_tooltip_text: Some("移除机位"),
+                        set_sensitive: track!(model.changed(AppModel::recording()) || model.changed(AppModel::slaves()), model.get_slaves().len() > 0 && *model.get_recording() != Some(true)),
+                        connect_clicked(sender) => move |button| {
+                            send!(sender, AppMsg::DestroySlave(std::ptr::null()));
+                        },
+                    },
+                    pack_end = &Button {
+                        set_icon_name: "tab-new-symbolic",
                         set_tooltip_text: Some("新建机位"),
                         set_sensitive: track!(model.changed(AppModel::recording()), model.recording != Some(true)),
-                        connect_clicked(sender, app_window) => move |button| {
-                            send!(sender, AppMsg::NewSlave(app_window.downgrade()));
+                        connect_clicked[sender = sender.clone(), window = app_window.clone().downgrade()] => move |button| {
+                            send!(sender, AppMsg::NewSlave(window.clone()));
                         },
                     },
                 },
-                append = &Stack  {
-                    add_child = &StatusPage {
-                        set_icon_name: Some("window-new-symbolic"),
+                append: body_stack = &Stack  {
+                    add_child: welcome_page = &StatusPage {
+                        set_icon_name: Some("tab-new-symbolic"),
                         set_title: "无机位",
-                        set_visible: watch!(model.slaves.len() == 0),
                         set_description: Some("请点击标题栏右侧按钮添加机位"),
                     },
-                    add_child = &Grid {
+                    add_child: slaves_page = &Grid {
                         set_hexpand: true,
                         set_vexpand: true,
                         factory!(model.slaves),
@@ -170,6 +178,17 @@ impl Widgets<AppModel, ()> for AppWidgets {
             "首选项"     => PreferencesAction,
             "键盘快捷键" => KeybindingsAction,
             "关于"       => AboutDialogAction,
+        }
+    }
+
+    fn post_view() {
+        
+        if model.changed(AppModel::slaves()) {
+            if model.get_slaves().len() == 0 {
+                self.body_stack.set_visible_child(&self.welcome_page);
+            } else {
+                self.body_stack.set_visible_child(&self.slaves_page);
+            }
         }
     }
     
@@ -206,6 +225,7 @@ impl Widgets<AppModel, ()> for AppWidgets {
 
 pub enum AppMsg {
     NewSlave(WeakRef<ApplicationWindow>),
+    DestroySlave(*const SlaveModel),
     DispatchInputEvent(InputEvent),
     PreferencesUpdated(PreferencesModel),
     ToggleRecording, 
@@ -245,9 +265,10 @@ impl AppUpdate for AppModel {
                 let video_port = self.get_preferences().borrow().get_default_local_video_port().wrapping_add(index as u16);
                 let (input_event_sender, input_event_receiver) = MainContext::channel(PRIORITY_DEFAULT);
                 let (slave_event_sender, slave_event_receiver) = MainContext::channel(PRIORITY_DEFAULT);
-                let slave_config = SlaveConfigModel::new(Ipv4Addr::from(ip_octets), *self.get_preferences().clone().borrow().get_default_slave_port(), video_port);
-                let slave = SlaveModel::new(MyComponent::new(slave_config, slave_event_sender), self.get_preferences().clone(), input_event_sender);
-                let component = MyComponent::new(slave, app_window);
+                let mut slave_config = SlaveConfigModel::new(Ipv4Addr::from(ip_octets), *self.get_preferences().clone().borrow().get_default_slave_port(), video_port);
+                slave_config.set_keep_video_display_ratio(*self.get_preferences().borrow().get_default_keep_video_display_ratio());
+                let slave = SlaveModel::new(slave_config, self.get_preferences().clone(), &slave_event_sender, input_event_sender);
+                let component = MyComponent::new(slave, (sender.clone(), app_window));
                 let component_sender = component.sender().clone();
                 input_event_receiver.attach(None,  clone!(@strong component_sender => move |event| {
                     component_sender.send(SlaveMsg::InputReceived(event)).unwrap();
@@ -294,6 +315,16 @@ impl AppUpdate for AppModel {
             },
             AppMsg::StopInputSystem => {
                 self.input_system.stop();
+            },
+            AppMsg::DestroySlave(slave_ptr) => {
+                if slave_ptr == std::ptr::null() {
+                    self.slaves.pop();
+                    return true;
+                }
+                let slave_index = self.slaves.iter().enumerate().find_map(move |(index, component)| if component.model().unwrap().deref() as *const SlaveModel == slave_ptr { Some(index)} else { None }).unwrap();
+                if slave_index == self.slaves.len() - 1 {
+                    self.slaves.pop();
+                }
             },
         }
         // for i in 0..self.slaves.len() {
