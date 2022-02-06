@@ -1,28 +1,33 @@
-use std::{cell::{Cell, RefCell}, collections::HashMap, net::Ipv4Addr, path::PathBuf, rc::Rc, str::FromStr, sync::{Arc, Mutex}, fmt::Debug, thread, time::Duration};
+use std::{cell::{Cell, RefCell}, collections::{HashMap, VecDeque}, net::Ipv4Addr, path::PathBuf, rc::Rc, str::FromStr, sync::{Arc, Mutex}, fmt::Debug, thread, time::{Duration, SystemTime}};
 
 use fragile::Fragile;
 use glib::{MainContext, Object, PRIORITY_DEFAULT, Sender, Type, clone::{self, Upgrade}, WeakRef};
 
 use gstreamer as gst;
 use gst::{Pipeline, prelude::*};
-use gtk::{AboutDialog, Align, Box as GtkBox, Button, CenterBox, CheckButton, Dialog, DialogFlags, Entry, Frame, Grid, Image, Inhibit, Label, ListBox, MenuButton, Orientation, Overlay, Popover, ResponseType, Revealer, RevealerTransitionType, ScrolledWindow, SelectionModel, Separator, SingleSelection, SpinButton, Stack, StringList, Switch, ToggleButton, Viewport, gdk_pixbuf::Pixbuf, gio::{Menu, MenuItem, MenuModel}, prelude::*, Picture, FileFilter, ProgressBar, MessageDialog};
+use gtk::{AboutDialog, Align, Box as GtkBox, Button, CenterBox, CheckButton, Dialog, DialogFlags, Entry, Frame, Grid, Image, Inhibit, Label, ListBox, MenuButton, Orientation, Overlay, Popover, ResponseType, Revealer, RevealerTransitionType, ScrolledWindow, SelectionModel, Separator, SingleSelection, SpinButton, Stack, StringList, Switch, ToggleButton, Viewport, gdk_pixbuf::Pixbuf, gio::{Menu, MenuItem, MenuModel}, prelude::*, Picture, FileFilter, ProgressBar, MessageDialog, FileChooserAction};
 
-use adw::{ActionRow, ComboRow, HeaderBar, PreferencesGroup, PreferencesPage, PreferencesWindow, StatusPage, Window, prelude::*, Carousel, ApplicationWindow, Clamp, ToastOverlay};
+use adw::{ActionRow, ComboRow, HeaderBar, PreferencesGroup, PreferencesPage, PreferencesWindow, StatusPage, Window, prelude::*, Carousel, ApplicationWindow, Clamp, ToastOverlay, Toast};
 
 use relm4::{AppUpdate, WidgetPlus, ComponentUpdate, Components, Model, RelmApp, RelmComponent, Widgets, actions::{ActionGroupName, ActionName, RelmAction, RelmActionGroup}, factory::{DynamicIndex, FactoryPrototype, FactoryVec, FactoryVecDeque, positions::GridPosition}, new_action_group, send, MicroWidgets, MicroModel, MicroComponent};
 
 use relm4_macros::{widget, micro_widget};
 
+use serde::{Serialize, Deserialize};
 use strum::IntoEnumIterator;
 use strum_macros::{EnumIter, EnumString as EnumFromString, Display as EnumToString};
 
 use crate::{AppModel, input::{InputEvent, InputSource, InputSourceEvent, InputSystem}, preferences::{PreferencesMsg, PreferencesModel}, video::{self, MatExt, VideoDecoder}};
 use crate::AppMsg;
 use crate::prelude::ObjectExt;
+use crate::utils::{select_path, error_message};
+
+use async_std::{net::TcpStream, prelude::*, task, task::JoinHandle};
 
 use glib_macros::clone;
 
 use derivative::*;
+
 
 use self::param_tuner::SlaveParameterTunerModel;
 
@@ -51,6 +56,12 @@ pub struct SlaveModel {
     pub slave_info_displayed: bool,
     #[no_eq]
     pub status: Arc<Mutex<HashMap<SlaveStatusClass, i16>>>,
+    #[no_eq]
+    pub tcp_msg_sender: Option<async_std::channel::Sender<SlaveTcpMsg>>,
+    #[no_eq]
+    pub tcp_stream: Option<async_std::sync::Arc<TcpStream>>,
+    #[no_eq]
+    pub toast_messages: Rc<RefCell<VecDeque<String>>>,
 }
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
@@ -142,247 +153,251 @@ pub fn input_sources_list_box(input_source: &Option<InputSource>, input_system: 
 #[micro_widget(pub)]
 impl MicroWidgets<SlaveModel> for SlaveWidgets {
     view! {
-        vbox = GtkBox {
-            put_data: args!("sender", sender.clone()),
-            set_orientation: Orientation::Vertical,
-            append = &CenterBox {
-                set_css_classes: &["toolbar"],
-                set_orientation: Orientation::Horizontal,
-                set_start_widget = Some(&GtkBox) {
-                    set_hexpand: true,
-                    set_halign: Align::Start,
-                    set_spacing: 5,
-                    append = &Button {
-                        set_icon_name?: watch!(model.connected.map(|x| if x { "network-offline-symbolic" } else { "network-transmit-symbolic" })),
-                        set_sensitive: track!(model.changed(SlaveModel::connected()), model.connected != None),
-                        set_css_classes: &["circular"],
-                        set_tooltip_text: Some("连接/断开连接"),
-                        connect_clicked(sender) => move |button| {
-                            send!(sender, SlaveMsg::ToggleConnect);
+        toast_overlay = ToastOverlay {
+            add_toast?: watch!(model.get_toast_messages().borrow_mut().pop_front().map(|x| Toast::new(&x)).as_ref()),
+            set_child = Some(&GtkBox) {
+                put_data: args!("sender", sender.clone()),
+                set_orientation: Orientation::Vertical,
+                append = &CenterBox {
+                    set_css_classes: &["toolbar"],
+                    set_orientation: Orientation::Horizontal,
+                    set_start_widget = Some(&GtkBox) {
+                        set_hexpand: true,
+                        set_halign: Align::Start,
+                        set_spacing: 5,
+                        append = &Button {
+                            set_icon_name?: watch!(model.connected.map(|x| if x { "network-offline-symbolic" } else { "network-transmit-symbolic" })),
+                            set_sensitive: track!(model.changed(SlaveModel::connected()), model.connected != None),
+                            set_css_classes?: watch!(model.connected.map(|x| if x { vec!["circular", "suggested-action"] } else { vec!["circular"] }).as_ref()),
+                            set_tooltip_text: Some("连接/断开连接"),
+                            connect_clicked(sender) => move |button| {
+                                send!(sender, SlaveMsg::ToggleConnect);
+                            },
+                        },
+                        append = &Button {
+                            set_icon_name?: watch!(model.polling.map(|x| if x { "media-playback-pause-symbolic" } else { "media-playback-start-symbolic" })),
+                            set_sensitive: track!(model.changed(SlaveModel::polling()), model.polling != None),
+                            set_css_classes?: watch!(model.polling.map(|x| if x { vec!["circular", "destructive-action"] } else { vec!["circular"] }).as_ref()),
+                            set_css_classes: &["circular"],
+                            set_tooltip_text: Some("启动/停止视频"),
+                            connect_clicked(sender) => move |button| {
+                                send!(sender, SlaveMsg::TogglePolling);
+                            },
                         },
                     },
-                    append = &Button {
-                        set_icon_name?: watch!(model.polling.map(|x| if x { "media-playback-pause-symbolic" } else { "media-playback-start-symbolic" })),
-                        set_sensitive: track!(model.changed(SlaveModel::polling()), model.polling != None),
-                        set_css_classes: &["circular"],
-                        set_tooltip_text: Some("启动/停止视频"),
-                        connect_clicked(sender) => move |button| {
-                            send!(sender, SlaveMsg::TogglePolling);
+                    set_center_widget = Some(&GtkBox) {
+                        set_hexpand: true,
+                        set_halign: Align::Center,
+                        set_spacing: 5,
+                        append = &Label {
+                            set_text: track!(model.changed(SlaveModel::config()), format!("{}:{}", model.config.model().get_ip(), model.config.model().get_port()).as_str()),
                         },
-                    },
-                },
-                set_center_widget = Some(&GtkBox) {
-                    set_hexpand: true,
-                    set_halign: Align::Center,
-                    set_spacing: 5,
-                    append = &Label {
-                        set_text: track!(model.changed(SlaveModel::config()), format!("{}:{}", model.config.model().get_ip(), model.config.model().get_port()).as_str()),
-                    },
-                    append = &MenuButton {
-                        set_icon_name: "input-gaming-symbolic",
-                        set_css_classes: &["circular"],
-                        set_tooltip_text: Some("切换当前机位使用的输入设备"),
-                        set_popover = Some(&Popover) {
-                            set_child = Some(&GtkBox) {
-                                set_spacing: 5,
-                                set_orientation: Orientation::Vertical, 
-                                append = &CenterBox {
-                                    set_center_widget = Some(&Label) {
-                                        set_margin_start: 10,
-                                        set_margin_end: 10,
-                                        set_text: "输入设备"
-                                    },
-                                    set_end_widget = Some(&Button) {
-                                        set_icon_name: "view-refresh-symbolic",
-                                        set_css_classes: &["circular"],
-                                        set_tooltip_text: Some("刷新输入设备"),
-                                        connect_clicked(sender) => move |button| {
-                                            send!(sender, SlaveMsg::UpdateInputSources);
+                        append = &MenuButton {
+                            set_icon_name: "input-gaming-symbolic",
+                            set_css_classes: &["circular"],
+                            set_tooltip_text: Some("切换当前机位使用的输入设备"),
+                            set_popover = Some(&Popover) {
+                                set_child = Some(&GtkBox) {
+                                    set_spacing: 5,
+                                    set_orientation: Orientation::Vertical, 
+                                    append = &CenterBox {
+                                        set_center_widget = Some(&Label) {
+                                            set_margin_start: 10,
+                                            set_margin_end: 10,
+                                            set_text: "输入设备"
+                                        },
+                                        set_end_widget = Some(&Button) {
+                                            set_icon_name: "view-refresh-symbolic",
+                                            set_css_classes: &["circular"],
+                                            set_tooltip_text: Some("刷新输入设备"),
+                                            connect_clicked(sender) => move |button| {
+                                                send!(sender, SlaveMsg::UpdateInputSources);
+                                            },
                                         },
                                     },
+                                    append = &Frame {
+                                        set_child: track!(model.changed(SlaveModel::input_system()), Some(&input_sources_list_box(&model.input_source, &model.input_system ,&sender))),
+                                    },
+                                    
                                 },
-                                append = &Frame {
-                                    set_child: track!(model.changed(SlaveModel::input_system()), Some(&input_sources_list_box(&model.input_source, &model.input_system ,&sender))),
-                                },
-                                
+                            },
+                        },
+                    },
+                    set_end_widget = Some(&GtkBox) {
+                        set_hexpand: true,
+                        set_halign: Align::End,
+                        set_spacing: 5,
+                        set_margin_end: 5,
+                        append = &Button {
+                            set_icon_name: "software-update-available-symbolic",
+                            set_css_classes: &["circular"],
+                            set_tooltip_text: Some("固件更新"),
+                            connect_clicked(sender) => move |button| {
+                                send!(sender, SlaveMsg::OpenFirmwareUpater);
+                            },
+                        },
+                        append = &Button {
+                            set_icon_name: "utilities-system-monitor-symbolic",
+                            set_css_classes: &["circular"],
+                            set_tooltip_text: Some("参数调校"),
+                            connect_clicked(sender) => move |button| {
+                                send!(sender, SlaveMsg::OpenParameterTuner);
+                            },
+                        },
+                        append = &ToggleButton {
+                            set_icon_name: "emblem-system-symbolic",
+                            set_css_classes: &["circular"],
+                            set_tooltip_text: Some("机位设置"),
+                            put_data: args!("sender", model.config.sender().clone()),
+                            connect_active_notify => move |button| {
+                                let sender = button.get_data::<Sender<SlaveConfigMsg>>("sender").unwrap().clone();
+                                send!(sender, SlaveConfigMsg::TogglePresented);
+                            },
+                        },
+                        append = &ToggleButton {
+                            set_icon_name: "window-close-symbolic",
+                            set_css_classes: &["circular"],
+                            set_tooltip_text: Some("移除机位"),
+                            set_visible: false,
+                            connect_active_notify(sender) => move |button| {
+                                send!(sender, SlaveMsg::DestroySlave);
                             },
                         },
                     },
                 },
-                set_end_widget = Some(&GtkBox) {
-                    set_hexpand: true,
-                    set_halign: Align::End,
-                    set_spacing: 5,
-                    set_margin_end: 5,
-                    append = &Button {
-                        set_icon_name: "software-update-available-symbolic",
-                        set_css_classes: &["circular"],
-                        set_tooltip_text: Some("固件更新"),
-                        connect_clicked(sender) => move |button| {
-                            send!(sender, SlaveMsg::OpenFirmwareUpater(button.clone()));
-                        },
-                    },
-                    append = &Button {
-                        set_icon_name: "utilities-system-monitor-symbolic",
-                        set_css_classes: &["circular"],
-                        set_tooltip_text: Some("参数调校"),
-                        connect_clicked(sender) => move |button| {
-                            send!(sender, SlaveMsg::OpenParameterTuner);
-                        },
-                    },
-                    append = &ToggleButton {
-                        set_icon_name: "emblem-system-symbolic",
-                        set_css_classes: &["circular"],
-                        set_tooltip_text: Some("机位设置"),
-                        put_data: args!("sender", model.config.sender().clone()),
-                        connect_active_notify => move |button| {
-                            let sender = button.get_data::<Sender<SlaveConfigMsg>>("sender").unwrap().clone();
-                            send!(sender, SlaveConfigMsg::TogglePresented);
-                        },
-                    },
-                    append = &ToggleButton {
-                        set_icon_name: "window-close-symbolic",
-                        set_css_classes: &["circular"],
-                        set_tooltip_text: Some("移除机位"),
-                        set_visible: false,
-                        connect_active_notify(sender) => move |button| {
-                            send!(sender, SlaveMsg::DestroySlave);
-                        },
-                    },
-                },
-            },
-            append = &GtkBox {
-                set_orientation: Orientation::Horizontal,
-                append = &Overlay {
-                    set_child: Some(model.video.root_widget()),
-                    add_overlay = &GtkBox {
-                        set_valign: Align::Start,
-                        set_halign: Align::End,
-                        set_hexpand: true,
-                        set_margin_all: 20, 
-                        append = &Frame {
-                            set_css_classes: &["card"],
-                            set_child = Some(&GtkBox) {
-                                set_orientation: Orientation::Vertical,
-                                set_margin_all: 5,
-                                set_width_request: 50,
-                                set_spacing: 5,
-                                append = &Button {
-                                    set_child = Some(&CenterBox) {
-                                        set_center_widget = Some(&Label) {
-                                            set_margin_start: 10,
-                                            set_margin_end: 10,
-                                            set_text: "机位信息",
+                append = &GtkBox {
+                    set_orientation: Orientation::Horizontal,
+                    append = &Overlay {
+                        set_child: Some(model.video.root_widget()),
+                        add_overlay = &GtkBox {
+                            set_valign: Align::Start,
+                            set_halign: Align::End,
+                            set_hexpand: true,
+                            set_margin_all: 20, 
+                            append = &Frame {
+                                set_css_classes: &["card"],
+                                set_child = Some(&GtkBox) {
+                                    set_orientation: Orientation::Vertical,
+                                    set_margin_all: 5,
+                                    set_width_request: 50,
+                                    set_spacing: 5,
+                                    append = &Button {
+                                        set_child = Some(&CenterBox) {
+                                            set_center_widget = Some(&Label) {
+                                                set_margin_start: 10,
+                                                set_margin_end: 10,
+                                                set_text: "机位信息",
+                                            },
+                                            set_end_widget = Some(&Image) {
+                                                set_icon_name: watch!(Some(if model.slave_info_displayed { "go-down-symbolic" } else { "go-next-symbolic" })),
+                                            },
                                         },
-                                        set_end_widget = Some(&Image) {
-                                            set_icon_name: watch!(Some(if model.slave_info_displayed { "go-down-symbolic" } else { "go-next-symbolic" })),
+                                        connect_clicked(sender) => move |button| {
+                                            send!(sender, SlaveMsg::ToggleDisplayInfo);
                                         },
                                     },
-                                    connect_clicked(sender) => move |button| {
-                                        send!(sender, SlaveMsg::ToggleDisplayInfo);
-                                    },
-                                },
-                                append = &Revealer {
-                                    set_reveal_child: watch!(model.slave_info_displayed),
-                                    set_child = Some(&GtkBox) {
-                                        set_spacing: 2,
-                                        set_margin_all: 5,
-                                        set_orientation: Orientation::Vertical,
-                                        set_halign: Align::Center,
-                                        append = &Frame {
-                                            set_hexpand: true,
+                                    append = &Revealer {
+                                        set_reveal_child: watch!(model.slave_info_displayed),
+                                        set_child = Some(&GtkBox) {
+                                            set_spacing: 2,
+                                            set_margin_all: 5,
+                                            set_orientation: Orientation::Vertical,
                                             set_halign: Align::Center,
-                                            set_child = Some(&Grid) {
-                                                set_margin_all: 2,
-                                                set_row_spacing: 2,
-                                                set_column_spacing: 2,
-                                                attach(0, 0, 1, 1) = &ToggleButton {
-                                                    set_icon_name: "object-rotate-left-symbolic",
-                                                    set_active: watch!(model.get_target_status(&SlaveStatusClass::MotionRotate) < -JOYSTICK_DISPLAY_THRESHOLD),
-                                                },
-                                                attach(2, 0, 1, 1) = &ToggleButton {
-                                                    set_icon_name: "object-rotate-right-symbolic",
-                                                    set_active: watch!(model.get_target_status(&SlaveStatusClass::MotionRotate) > JOYSTICK_DISPLAY_THRESHOLD),
-                                                },
-                                                attach(0, 2, 1, 1) = &ToggleButton {
-                                                    set_icon_name: "go-bottom-symbolic",
-                                                    set_active: watch!(model.get_target_status(&SlaveStatusClass::MotionZ) < -JOYSTICK_DISPLAY_THRESHOLD),
-                                                },
-                                                attach(2, 2, 1, 1) = &ToggleButton {
-                                                    set_icon_name: "go-top-symbolic",
-                                                    set_active: watch!(model.get_target_status(&SlaveStatusClass::MotionZ) > JOYSTICK_DISPLAY_THRESHOLD),
-                                                },
-                                                attach(1, 0, 1, 1) = &ToggleButton {
-                                                    set_icon_name: "go-up-symbolic",
-                                                    set_active: watch!(model.get_target_status(&SlaveStatusClass::MotionY) > JOYSTICK_DISPLAY_THRESHOLD),
-                                                },
-                                                attach(0, 1, 1, 1) = &ToggleButton {
-                                                    set_icon_name: "go-previous-symbolic",
-                                                    set_active: watch!(model.get_target_status(&SlaveStatusClass::MotionX) < -JOYSTICK_DISPLAY_THRESHOLD),
-                                                },
-                                                attach(2, 1, 1, 1) = &ToggleButton {
-                                                    set_icon_name: "go-next-symbolic",
-                                                    set_active: watch!(model.get_target_status(&SlaveStatusClass::MotionX) > JOYSTICK_DISPLAY_THRESHOLD),
-                                                },
-                                                attach(1, 2, 1, 1) = &ToggleButton {
-                                                    set_icon_name: "go-down-symbolic",
-                                                    set_active: watch!(model.get_target_status(&SlaveStatusClass::MotionY) < -JOYSTICK_DISPLAY_THRESHOLD),
+                                            append = &Frame {
+                                                set_hexpand: true,
+                                                set_halign: Align::Center,
+                                                set_child = Some(&Grid) {
+                                                    set_margin_all: 2,
+                                                    set_row_spacing: 2,
+                                                    set_column_spacing: 2,
+                                                    attach(0, 0, 1, 1) = &ToggleButton {
+                                                        set_icon_name: "object-rotate-left-symbolic",
+                                                        set_active: watch!(model.get_target_status(&SlaveStatusClass::MotionRotate) < -JOYSTICK_DISPLAY_THRESHOLD),
+                                                    },
+                                                    attach(2, 0, 1, 1) = &ToggleButton {
+                                                        set_icon_name: "object-rotate-right-symbolic",
+                                                        set_active: watch!(model.get_target_status(&SlaveStatusClass::MotionRotate) > JOYSTICK_DISPLAY_THRESHOLD),
+                                                    },
+                                                    attach(0, 2, 1, 1) = &ToggleButton {
+                                                        set_icon_name: "go-bottom-symbolic",
+                                                        set_active: watch!(model.get_target_status(&SlaveStatusClass::MotionZ) < -JOYSTICK_DISPLAY_THRESHOLD),
+                                                    },
+                                                    attach(2, 2, 1, 1) = &ToggleButton {
+                                                        set_icon_name: "go-top-symbolic",
+                                                        set_active: watch!(model.get_target_status(&SlaveStatusClass::MotionZ) > JOYSTICK_DISPLAY_THRESHOLD),
+                                                    },
+                                                    attach(1, 0, 1, 1) = &ToggleButton {
+                                                        set_icon_name: "go-up-symbolic",
+                                                        set_active: watch!(model.get_target_status(&SlaveStatusClass::MotionY) > JOYSTICK_DISPLAY_THRESHOLD),
+                                                    },
+                                                    attach(0, 1, 1, 1) = &ToggleButton {
+                                                        set_icon_name: "go-previous-symbolic",
+                                                        set_active: watch!(model.get_target_status(&SlaveStatusClass::MotionX) < -JOYSTICK_DISPLAY_THRESHOLD),
+                                                    },
+                                                    attach(2, 1, 1, 1) = &ToggleButton {
+                                                        set_icon_name: "go-next-symbolic",
+                                                        set_active: watch!(model.get_target_status(&SlaveStatusClass::MotionX) > JOYSTICK_DISPLAY_THRESHOLD),
+                                                    },
+                                                    attach(1, 2, 1, 1) = &ToggleButton {
+                                                        set_icon_name: "go-down-symbolic",
+                                                        set_active: watch!(model.get_target_status(&SlaveStatusClass::MotionY) < -JOYSTICK_DISPLAY_THRESHOLD),
+                                                    },
                                                 },
                                             },
-                                        },
-                                        append = &Label {
-                                            set_halign: Align::Start,
-                                            set_text: "机位信息 1",
-                                        },
-                                        append = &Label {
-                                            set_halign: Align::Start,
-                                            set_text: "机位信息 2",
-                                        },
-                                        append = &Label {
-                                            set_halign: Align::Start,
-                                            set_text: "机位信息 3",
-                                        },
-                                        append = &Label {
-                                            set_halign: Align::Start,
-                                            set_text: "机位信息 4",
-                                        },
-                                        append = &Label {
-                                            set_halign: Align::Start,
-                                            set_text: "机位信息 5",
-                                        },
-                                        append = &CenterBox {
-                                            set_hexpand: true,
-                                            set_start_widget = Some(&Label) {
-                                                set_text: "深度锁定",
+                                            append = &Label {
+                                                set_halign: Align::Start,
+                                                set_text: "机位信息 1",
                                             },
-                                            set_end_widget = Some(&Switch) {
-                                                set_active: watch!(model.get_target_status(&SlaveStatusClass::DepthLocked) != 0),
+                                            append = &Label {
+                                                set_halign: Align::Start,
+                                                set_text: "机位信息 2",
                                             },
-                                        },
-                                        append = &CenterBox {
-                                            set_hexpand: true,
-                                            set_start_widget = Some(&Label) {
-                                                set_text: "方向锁定",
+                                            append = &Label {
+                                                set_halign: Align::Start,
+                                                set_text: "机位信息 3",
                                             },
-                                            set_end_widget = Some(&Switch) {
-                                                set_active: watch!(model.get_target_status(&SlaveStatusClass::DirectionLocked) != 0),
+                                            append = &Label {
+                                                set_halign: Align::Start,
+                                                set_text: "机位信息 4",
+                                            },
+                                            append = &Label {
+                                                set_halign: Align::Start,
+                                                set_text: "机位信息 5",
+                                            },
+                                            append = &CenterBox {
+                                                set_hexpand: true,
+                                                set_start_widget = Some(&Label) {
+                                                    set_text: "深度锁定",
+                                                },
+                                                set_end_widget = Some(&Switch) {
+                                                    set_active: watch!(model.get_target_status(&SlaveStatusClass::DepthLocked) != 0),
+                                                },
+                                            },
+                                            append = &CenterBox {
+                                                set_hexpand: true,
+                                                set_start_widget = Some(&Label) {
+                                                    set_text: "方向锁定",
+                                                },
+                                                set_end_widget = Some(&Switch) {
+                                                    set_active: watch!(model.get_target_status(&SlaveStatusClass::DirectionLocked) != 0),
+                                                },
                                             },
                                         },
                                     },
-                                },
+                                }
                             }
                         }
-                    }
-                }, 
-                append: model.config.root_widget(),
-            },
+                    }, 
+                    append: model.config.root_widget(),
+                },
+            }
         }
     }
 }
 
 impl std::fmt::Debug for SlaveWidgets {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.vbox.fmt(f)
+        self.toast_overlay.fmt(f)
     }
 }
 
@@ -394,10 +409,112 @@ pub enum SlaveMsg {
     UpdateInputSources,
     ToggleDisplayInfo,
     InputReceived(InputSourceEvent),
-    OpenFirmwareUpater(Button),
+    OpenFirmwareUpater,
     OpenParameterTuner,
     DestroySlave,
     VideoPipelineError(String),
+    TcpError(String),
+    TcpConnectionChanged(Option<async_std::sync::Arc<TcpStream>>),
+    ShowToastMessage(String),
+}
+
+pub enum SlaveTcpMsg {
+    Disconnect,
+    SendString(String),
+    ControlUpdated(ControlPacket),
+}
+
+async fn tcp_main_handler(input_rate: u16,
+                          tcp_stream: Arc<TcpStream>,
+                          tcp_sender: async_std::channel::Sender<SlaveTcpMsg>,
+                          tcp_receiver: async_std::channel::Receiver<SlaveTcpMsg>,
+                          slave_sender: Sender<SlaveMsg>) {
+    fn current_millis() -> u128 {
+        SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis()
+    }
+    send!(slave_sender, SlaveMsg::TcpConnectionChanged(Some(tcp_stream.clone())));
+    
+    let mut tcp_stream = &*tcp_stream;
+    let idle = async_std::sync::Arc::new(async_std::sync::Mutex::new(true));
+    let last_action_timestamp = async_std::sync::Arc::new(async_std::sync::Mutex::new(current_millis()));
+    let control_packet = async_std::sync::Arc::new(async_std::sync::Mutex::new(None as Option<ControlPacket>));
+    
+    const IDLE_TIME_MILLIS: u128 = 5000;
+
+    let connection_test_task = task::spawn(clone!(@strong idle, @strong tcp_sender, @strong tcp_stream, @strong last_action_timestamp => async move {
+        let mut tcp_stream = &tcp_stream;
+        loop {
+            if tcp_sender.is_closed() {
+                return;
+            }
+            if *idle.lock().await {
+                if current_millis() - *last_action_timestamp.lock().await >= IDLE_TIME_MILLIS {
+                    if tcp_stream.write_all("{}".as_bytes()).await.is_err() {
+                        break;
+                    }
+                }
+            }
+            task::sleep(Duration::from_millis(500)).await;
+            dbg!(current_millis());
+        }
+        tcp_sender.send(SlaveTcpMsg::Disconnect).await.unwrap();
+    }));
+    
+    let control_send_task = task::spawn(clone!(@strong idle, @strong tcp_sender, @strong tcp_stream, @strong control_packet => async move {
+        let mut tcp_stream = &tcp_stream;
+        loop {
+            if tcp_sender.is_closed() {
+                return;
+            }
+            if *idle.lock().await {
+                let mut control_mutex = control_packet.lock().await;
+                if let Some(control) = control_mutex.as_ref() {
+                    if tcp_stream.write_all(control.to_string().as_bytes()).await.is_ok() {
+                        *control_mutex = None;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            task::sleep(Duration::from_millis(1000 / input_rate as u64)).await;
+        }
+        tcp_sender.send(SlaveTcpMsg::Disconnect).await.unwrap();
+    }));
+    
+    loop {
+        match tcp_receiver.recv().await {
+            Ok(msg) => {
+                match msg {
+                    SlaveTcpMsg::Disconnect => {
+                        if tcp_stream.shutdown(std::net::Shutdown::Both).is_ok() {
+                            connection_test_task.cancel().await;
+                            control_send_task.cancel().await;
+                            send!(slave_sender, SlaveMsg::TcpConnectionChanged(None));
+                        } else {
+                            send!(slave_sender, SlaveMsg::TcpError("连接意外终止".to_string()));
+                        }
+                        break;
+                    },
+                    SlaveTcpMsg::SendString(string) => {
+                        if tcp_stream.write_all(string.as_bytes()).await.is_ok() {
+                            *last_action_timestamp.lock().await = current_millis();
+                        } else {
+                            tcp_stream.shutdown(std::net::Shutdown::Both).unwrap();
+                            break;
+                        }
+                    },
+                    SlaveTcpMsg::ControlUpdated(control) => {
+                        dbg!(&control);
+                        *control_packet.lock().await = Some(control);
+                        *last_action_timestamp.lock().await = current_millis();
+                    },
+                }
+            },
+            Err(err) => println!("{}", err.to_string()),
+
+        }
+    }
+    tcp_receiver.close();
 }
 
 impl MicroModel for SlaveModel {
@@ -412,13 +529,31 @@ impl MicroModel for SlaveModel {
             },
             SlaveMsg::ToggleConnect => {
                 match self.get_connected() {
-                    Some(true) =>{
-                        self.set_connected(Some(false));
-                        self.config.send(SlaveConfigMsg::SetConnected(Some(false))).unwrap();
+                    Some(true) => { // 断开连接
+                        self.set_connected(None);
+                        self.config.send(SlaveConfigMsg::SetConnected(None)).unwrap();
+                        let sender = self.get_tcp_msg_sender().clone().unwrap();
+                        task::spawn(async move {
+                            sender.send(SlaveTcpMsg::Disconnect).await.expect("TCP should be running");
+                        });
                     },
-                    Some(false) => {
-                        self.set_connected(Some(true));
-                        self.config.send(SlaveConfigMsg::SetConnected(Some(true))).unwrap();
+                    Some(false) => { // 连接
+                        self.set_connected(None);
+                        self.config.send(SlaveConfigMsg::SetConnected(None)).unwrap();
+                        let (tcp_sender, tcp_receiver) = async_std::channel::bounded::<SlaveTcpMsg>(128);
+                        self.tcp_msg_sender = Some(tcp_sender.clone());
+                        let sender = sender.clone();
+                        let control_sending_rate = *self.preferences.borrow().get_default_input_sending_rate();
+                        let ip = *self.config.model().get_ip();
+                        let port = *self.config.model().get_port();
+                        async_std::task::spawn(async move {
+                            match TcpStream::connect(format!("{}:{}", ip, port)).await.map(|x| async_std::sync::Arc::new(x)) {
+                                Ok(tcp_stream) => {
+                                    tcp_main_handler(control_sending_rate, tcp_stream.clone(), tcp_sender, tcp_receiver, sender.clone()).await;
+                                },
+                                Err(err) => send!(sender, SlaveMsg::TcpError(err.to_string())),
+                            }
+                        });
                     },
                     None => (),
                 }
@@ -462,31 +597,58 @@ impl MicroModel for SlaveModel {
                         }
                     },
                 }
+                if let Some(sender) = self.get_tcp_msg_sender() {
+                    match sender.try_send(SlaveTcpMsg::ControlUpdated(ControlPacket::from_status_map(&self.status.lock().unwrap()))) {
+                        Ok(_) => (),
+                        Err(err) => println!("Cannot send control input: {}", err.to_string()),
+                    }
+                }
                 self.set_status(self.get_status().clone());
             },
-            SlaveMsg::OpenFirmwareUpater(button) => {
-                let component = MicroComponent::new(SlaveFirmwareUpdaterModel::new(), ());
-                component.root_widget().set_transient_for(Some(&window.upgrade().unwrap()));
+            SlaveMsg::OpenFirmwareUpater => {
+                match &self.tcp_stream {
+                    Some(tcp_stream) => {
+                        let component = MicroComponent::new(SlaveFirmwareUpdaterModel::new(), ());
+                        component.root_widget().set_transient_for(Some(&window.upgrade().unwrap()));
+                    },
+                    None => {
+                        error_message("错误", "请先连接连接下位机！", window.upgrade().as_ref());
+                    },
+                }
             },
             SlaveMsg::OpenParameterTuner => {
-                let component = MicroComponent::new(SlaveParameterTunerModel::new(), ());
-                component.root_widget().set_transient_for(Some(&window.upgrade().unwrap()));
+                match &self.tcp_stream {
+                    Some(tcp_stream) => {
+                        let component = MicroComponent::new(SlaveParameterTunerModel::new(tcp_stream.clone()), ());
+                        component.root_widget().set_transient_for(Some(&window.upgrade().unwrap()));
+                    },
+                    None => {
+                        error_message("错误", "请先连接连接下位机！", window.upgrade().as_ref());
+                    },
+                }
             },
             SlaveMsg::DestroySlave => {
                 send!(parent_sender, AppMsg::DestroySlave(self as *const Self));
             },
             SlaveMsg::VideoPipelineError(msg) => {
-                relm4_macros::view! {
-                    dialog = MessageDialog {
-                        set_message_type: gtk::MessageType::Error,
-                        set_text: Some(&msg),
-                        set_title: Some("启动视频流错误"),
-                        set_transient_for: window.upgrade().as_ref(),
-                    }
-                }
+                error_message("错误", &msg, window.upgrade().as_ref());
                 self.set_polling(Some(false));
                 self.config.send(SlaveConfigMsg::SetPolling(Some(false))).unwrap();
-                dialog.present();
+            },
+            SlaveMsg::TcpError(msg) => {
+                send!(sender, SlaveMsg::ShowToastMessage(format!("下位机通讯错误：{}", msg)));
+                send!(sender, SlaveMsg::TcpConnectionChanged(None));
+            },
+            SlaveMsg::TcpConnectionChanged(tcp_stream) => {
+                self.set_connected(Some(tcp_stream.is_some()));
+                self.config.send(SlaveConfigMsg::SetConnected(Some(tcp_stream.is_some()))).unwrap();
+                if tcp_stream.is_none() {
+                    self.set_tcp_msg_sender(None);
+                }
+                self.set_tcp_stream(tcp_stream);
+            },
+            SlaveMsg::ShowToastMessage(msg) => {
+                self.get_mut_toast_messages().borrow_mut().push_back(msg);
             },
         }
     }
@@ -540,40 +702,6 @@ impl CarouselExt for Carousel {
     fn scroll_to_page(&self, page_index: u32, animate: bool) {
         self.scroll_to(&self.nth_page(page_index), animate);
     }
-}
-
-fn open_file<T, F>(filters: &[FileFilter], parent_window: &T, callback: F)
-where T: IsA<gtk::Window>,
-      F: 'static + Fn(Option<PathBuf>) -> () {
-    relm4_macros::view! {
-        file_chooser = gtk::FileChooserNative {
-            set_action: gtk::FileChooserAction::Open,
-            add_filter: iterate!(filters),
-            set_create_folders: true,
-            set_cancel_label: Some("取消"),
-            set_accept_label: Some("打开"),
-            set_modal: true,
-            set_transient_for: Some(parent_window),
-            connect_response => move |dialog, res_ty| {
-                match res_ty {
-                    gtk::ResponseType::Accept => {
-                        if let Some(file) = dialog.file() {
-                            if let Some(path) = file.path() {
-                                callback(Some(path));
-                                return;
-                            }
-                        }
-                    },
-                    gtk::ResponseType::Cancel => {
-                        callback(None)
-                    },
-                    _ => (),
-                }
-            },
-        }
-    }
-    file_chooser.show();
-    std::mem::forget(file_chooser); // TODO: 内存泄露处理
 }
 
 #[micro_widget(pub)]
@@ -630,14 +758,14 @@ impl MicroWidgets<SlaveFirmwareUpdaterModel> for SlaveFirmwareUpdaterWidgets {
                                             let filter = FileFilter::new();
                                             filter.add_suffix("bin");
                                             filter.set_name(Some("固件文件"));
-                                            open_file(&[filter], &window, clone!(@strong sender => move |path| {
+                                            std::mem::forget(select_path(FileChooserAction::Open, &[filter], &window, clone!(@strong sender => move |path| {
                                                 match path {
                                                     Some(path) => {
                                                         send!(sender, SlaveFirmwareUpdaterMsg::FirmwareFileSelected(path));
                                                     },
                                                     None => (),
                                                 }
-                                            }));
+                                            }))); // 内存泄露修复
                                         },
                                     },
                                     set_activatable_widget: Some(&browse_firmware_file_button),
@@ -761,8 +889,8 @@ where
 
 impl FactoryPrototype for MyComponent<SlaveModel> {
     type Factory = FactoryVec<Self>;
-    type Widgets = GtkBox;
-    type Root = GtkBox;
+    type Widgets = ToastOverlay;
+    type Root = ToastOverlay;
     type View = Grid;
     type Msg = AppMsg;
 
@@ -770,7 +898,7 @@ impl FactoryPrototype for MyComponent<SlaveModel> {
         &self,
         index: &usize,
         sender: Sender<AppMsg>,
-    ) -> GtkBox {
+    ) -> ToastOverlay {
         self.component.root_widget().clone()
     }
 
@@ -792,13 +920,49 @@ impl FactoryPrototype for MyComponent<SlaveModel> {
     fn view(
         &self,
         index: &usize,
-        widgets: &GtkBox,
+        widgets: &ToastOverlay,
     ) {
         self.component.update_view().unwrap();
     }
 
-    fn root_widget(widgets: &GtkBox) -> &GtkBox {
+    fn root_widget(widgets: &ToastOverlay) -> &ToastOverlay {
         widgets
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ControlPacket {
+    x: f32,
+    y: f32,
+    z: f32,
+    rot: f32,
+    depth_locked: bool,
+    direction_locked: bool,
+}
+
+impl ControlPacket {
+    pub fn from_status_map(status_map: &HashMap<SlaveStatusClass, i16>) -> ControlPacket {
+        fn map_value(value: &i16) -> f32 {
+            match *value {
+                0 => 0.0,
+                1..=i16::MAX => *value as f32 / i16::MAX as f32,
+                i16::MIN..=-1 =>  *value as f32 / i16::MIN as f32 * -1.0,
+            }
+        }
+        ControlPacket {
+            x                : map_value(status_map.get(&SlaveStatusClass::MotionX).unwrap_or(&0)),
+            y                : map_value(status_map.get(&SlaveStatusClass::MotionY).unwrap_or(&0)),
+            z                : map_value(status_map.get(&SlaveStatusClass::MotionZ).unwrap_or(&0)),
+            rot              : map_value(status_map.get(&SlaveStatusClass::MotionRotate).unwrap_or(&0)),
+            depth_locked     : status_map.get(&SlaveStatusClass::DepthLocked).map(|x| *x >= 1).unwrap_or(false),
+            direction_locked : status_map.get(&SlaveStatusClass::DirectionLocked).map(|x| *x >= 1).unwrap_or(false),
+        }
+    }
+}
+
+impl ToString for ControlPacket {
+    fn to_string(&self) -> String {
+        serde_json::to_string_pretty(self).unwrap()
     }
 }
 
@@ -1122,6 +1286,7 @@ impl MicroWidgets<SlaveVideoModel> for SlaveVideoWidgets {
 pub mod param_tuner {
     use std::{cell::{Cell, RefCell}, collections::HashMap, net::Ipv4Addr, path::PathBuf, rc::Rc, str::FromStr, sync::{Arc, Mutex}, fmt::Debug, thread, time::Duration, cmp::{max, min}};
     
+    use async_std::net::TcpStream;
     use fragile::Fragile;
     use glib::{MainContext, Object, PRIORITY_DEFAULT, Sender, Type, clone, WeakRef};
     
@@ -1129,7 +1294,7 @@ pub mod param_tuner {
     use gst::{Pipeline, prelude::*};
     use gtk::{AboutDialog, Align, Box as GtkBox, Button, CenterBox, CheckButton, Dialog, DialogFlags, Entry, Frame, Grid, Image, Inhibit, Label, ListBox, MenuButton, Orientation, Overlay, Popover, ResponseType, Revealer, RevealerTransitionType, ScrolledWindow, SelectionModel, Separator, SingleSelection, SpinButton, Stack, StringList, Switch, ToggleButton, Viewport, gdk_pixbuf::Pixbuf, gio::{Menu, MenuItem, MenuModel}, prelude::*, Picture, FileFilter, ProgressBar, FlowBox, Scale, SelectionMode};
     
-    use adw::{ActionRow, ComboRow, HeaderBar, PreferencesGroup, PreferencesPage, PreferencesWindow, StatusPage, Window, prelude::*, Carousel, ApplicationWindow, Clamp, PreferencesRow, Leaflet, ToastOverlay};
+    use adw::{ActionRow, ComboRow, HeaderBar, PreferencesGroup, PreferencesPage, PreferencesWindow, StatusPage, Window, prelude::*, Carousel, ApplicationWindow, Clamp, PreferencesRow, Leaflet, ToastOverlay, ExpanderRow};
     
     use relm4::{AppUpdate, WidgetPlus, ComponentUpdate, Components, Model, RelmApp, RelmComponent, Widgets, actions::{ActionGroupName, ActionName, RelmAction, RelmActionGroup}, factory::{DynamicIndex, FactoryPrototype, FactoryVec, FactoryVecDeque, positions::GridPosition}, new_action_group, send, MicroWidgets, MicroModel, MicroComponent};
     use relm4_macros::{widget, micro_widget};
@@ -1152,6 +1317,7 @@ pub mod param_tuner {
         SetPropellerUpperDeadzone(usize, i8),
         SetPropellerPower(usize, f64),
         SetPropellerReversed(usize, bool),
+        SetPropellerEnabled(usize, bool),
         SetP(usize, f64),
         SetI(usize, f64),
         SetD(usize, f64),
@@ -1166,6 +1332,8 @@ pub mod param_tuner {
         upper: i8,
         #[derivative(Default(value="0.75"))]
         power: f64,
+        #[derivative(Default(value="true"))]
+        enabled: bool,
     }
     
     const DEFAULT_PROPELLERS: [&'static str; 6] = ["front_left", "front_right", "back_left", "back_right", "center_left", "center_right"];
@@ -1266,86 +1434,89 @@ pub mod param_tuner {
                     set_orientation: Orientation::Vertical,
                     set_spacing: 12,
                     append = &PreferencesGroup {
-                        add = &ActionRow {
-                            set_title: "反转",
-                            add_suffix: reversed_switch = &Switch {
-                                set_valign: Align::Center,
-                                set_active: track!(self.changed(PropellerDeadzone::power()), self.is_reversed()),
-                                connect_state_set(sender, key) => move |switch, state| {
-                                    send!(sender, SlaveParameterTunerMsg::SetPropellerReversed(key, state));
-                                    Inhibit(false)
+                        add = &ExpanderRow {
+                            set_title: "启用",
+                            set_show_enable_switch: true,
+                            set_expanded: *self.get_enabled(),
+                            set_enable_expansion: track!(self.changed(PropellerDeadzone::enabled()), *self.get_enabled()),
+                            connect_enable_expansion_notify(sender, key) => move |expander| {
+                                send!(sender, SlaveParameterTunerMsg::SetPropellerEnabled(key, expander.enables_expansion()));
+                            },
+                            add_row = &ActionRow {
+                                set_title: "反转",
+                                add_suffix: reversed_switch = &Switch {
+                                    set_valign: Align::Center,
+                                    set_active: track!(self.changed(PropellerDeadzone::power()), self.is_reversed()),
+                                    connect_state_set(sender, key) => move |switch, state| {
+                                        send!(sender, SlaveParameterTunerMsg::SetPropellerReversed(key, state));
+                                        Inhibit(false)
+                                    }
+                                },
+                                set_activatable_widget: Some(&reversed_switch),
+                            },
+                            add_row = &ActionRow {
+                                set_title: "动力",
+                                add_suffix = &SpinButton::with_range(0.01, 1.0, 0.01) {
+                                    set_value: track!(self.changed(PropellerDeadzone::power()), self.get_actual_power()),
+                                    set_digits: 2,
+                                    set_valign: Align::Center,
+                                    connect_value_changed(key, sender) => move |button| {
+                                        send!(sender, SlaveParameterTunerMsg::SetPropellerPower(key, button.value()));
+                                    }
+                                },
+                            },
+                            add_row = &ActionRow {
+                                set_child = Some(&Scale::with_range(Orientation::Horizontal, 0.01, 1.0, 0.01)) {
+                                    set_width_request: CARD_MIN_WIDTH,
+                                    set_round_digits: 2,
+                                    set_value: track!(self.changed(PropellerDeadzone::power()), self.get_actual_power() as f64),
+                                    connect_value_changed(key, sender) => move |scale| {
+                                        send!(sender, SlaveParameterTunerMsg::SetPropellerPower(key, scale.value()));
+                                    }
                                 }
                             },
-                            set_activatable_widget: Some(&reversed_switch),
-                        },
-                    },
-                    append = &PreferencesGroup {
-                        add = &ActionRow {
-                            set_title: "动力",
-                            add_suffix = &SpinButton::with_range(0.01, 1.0, 0.01) {
-                                set_value: track!(self.changed(PropellerDeadzone::power()), self.get_actual_power()),
-                                set_digits: 2,
-                                set_valign: Align::Center,
-                                connect_value_changed(key, sender) => move |button| {
-                                    send!(sender, SlaveParameterTunerMsg::SetPropellerPower(key, button.value()));
+                            add_row = &ActionRow {
+                                set_title: "死区上限",
+                                add_suffix = &SpinButton::with_range(-128.0, 127.0, 1.0) {
+                                    set_value: track!(self.changed(PropellerDeadzone::upper()), *self.get_upper() as f64),
+                                    set_digits: 0,
+                                    set_valign: Align::Center,
+                                    connect_value_changed(key, sender) => move |button| {
+                                        send!(sender, SlaveParameterTunerMsg::SetPropellerUpperDeadzone(key, button.value() as i8));
+                                    }
+                                },
+                            },
+                            add_row = &ActionRow {
+                                set_child = Some(&Scale::with_range(Orientation::Horizontal, -128.0, 127.0, 1.0)) {
+                                    set_width_request: CARD_MIN_WIDTH,
+                                    set_round_digits: 0,
+                                    set_value: track!(self.changed(PropellerDeadzone::upper()), *self.get_upper() as f64),
+                                    connect_value_changed(key, sender) => move |scale| {
+                                        send!(sender, SlaveParameterTunerMsg::SetPropellerUpperDeadzone(key, scale.value() as i8));
+                                    }
                                 }
                             },
-                        },
-                        add = &ActionRow {
-                            set_child = Some(&Scale::with_range(Orientation::Horizontal, 0.01, 1.0, 0.01)) {
-                                set_width_request: CARD_MIN_WIDTH,
-                                set_round_digits: 2,
-                                set_value: track!(self.changed(PropellerDeadzone::power()), self.get_actual_power() as f64),
-                                connect_value_changed(key, sender) => move |scale| {
-                                    send!(sender, SlaveParameterTunerMsg::SetPropellerPower(key, scale.value()));
-                                }
-                            }
-                        },
-                    },
-                    append = &PreferencesGroup {
-                        add = &ActionRow {
-                            set_title: "死区上限",
-                            add_suffix = &SpinButton::with_range(-128.0, 127.0, 1.0) {
-                                set_value: track!(self.changed(PropellerDeadzone::upper()), *self.get_upper() as f64),
-                                set_digits: 0,
-                                set_valign: Align::Center,
-                                connect_value_changed(key, sender) => move |button| {
-                                    send!(sender, SlaveParameterTunerMsg::SetPropellerUpperDeadzone(key, button.value() as i8));
+                            add_row = &ActionRow {
+                                set_title: "死区下限",
+                                add_suffix = &SpinButton::with_range(-128.0, 127.0, 1.0) {
+                                    set_value: track!(self.changed(PropellerDeadzone::lower()), *self.get_lower() as f64),
+                                    set_digits: 0,
+                                    set_valign: Align::Center,
+                                    connect_value_changed(key, sender) => move |button| {
+                                        send!(sender, SlaveParameterTunerMsg::SetPropellerLowerDeadzone(key, button.value() as i8));
+                                    }
+                                },
+                            },
+                            add_row = &ActionRow {
+                                set_child = Some(&Scale::with_range(Orientation::Horizontal, -128.0, 127.0, 1.0)) {
+                                    set_width_request: CARD_MIN_WIDTH,
+                                    set_round_digits: 0,
+                                    set_value: track!(self.changed(PropellerDeadzone::lower()), *self.get_lower() as f64),
+                                    connect_value_changed(key, sender) => move |scale| {
+                                        send!(sender, SlaveParameterTunerMsg::SetPropellerLowerDeadzone(key, scale.value() as i8));
+                                    }
                                 }
                             },
-                        },
-                        add = &ActionRow {
-                            set_child = Some(&Scale::with_range(Orientation::Horizontal, -128.0, 127.0, 1.0)) {
-                                set_width_request: CARD_MIN_WIDTH,
-                                set_round_digits: 0,
-                                set_value: track!(self.changed(PropellerDeadzone::upper()), *self.get_upper() as f64),
-                                connect_value_changed(key, sender) => move |scale| {
-                                    send!(sender, SlaveParameterTunerMsg::SetPropellerUpperDeadzone(key, scale.value() as i8));
-                                }
-                            }
-                        },
-                    },
-                    append = &PreferencesGroup {
-                        add = &ActionRow {
-                            set_title: "死区下限",
-                            add_suffix = &SpinButton::with_range(-128.0, 127.0, 1.0) {
-                                set_value: track!(self.changed(PropellerDeadzone::lower()), *self.get_lower() as f64),
-                                set_digits: 0,
-                                set_valign: Align::Center,
-                                connect_value_changed(key, sender) => move |button| {
-                                    send!(sender, SlaveParameterTunerMsg::SetPropellerLowerDeadzone(key, button.value() as i8));
-                                }
-                            },
-                        },
-                        add = &ActionRow {
-                            set_child = Some(&Scale::with_range(Orientation::Horizontal, -128.0, 127.0, 1.0)) {
-                                set_width_request: CARD_MIN_WIDTH,
-                                set_round_digits: 0,
-                                set_value: track!(self.changed(PropellerDeadzone::lower()), *self.get_lower() as f64),
-                                connect_value_changed(key, sender) => move |scale| {
-                                    send!(sender, SlaveParameterTunerMsg::SetPropellerLowerDeadzone(key, scale.value() as i8));
-                                }
-                            }
                         },
                     },
                 }
@@ -1461,7 +1632,7 @@ pub mod param_tuner {
     }
     
     impl SlaveParameterTunerModel {
-        pub fn new() -> Self {
+        pub fn new(tcp_stream: Arc<TcpStream>) -> Self {
             SlaveParameterTunerModel {
                 propeller_deadzones: FactoryVec::from_vec(DEFAULT_PROPELLERS.iter().map(|key| PropellerDeadzone::new(key)).collect()),
                 pids: FactoryVec::from_vec(DEFAULT_CONTROL_LOOPS.iter().map(|key| PID::new(key)).collect()),
@@ -1511,7 +1682,7 @@ pub mod param_tuner {
                     },
                 },
                 set_title: {
-                    {
+                    {           // Relm4存在Bug，以下代码应防止在 `post_view` 函数里
                         let groups = [&group_propeller, &group_pid];
                         let clamps = groups.iter().map(|x| x.parent().and_then(|x| x.parent()).and_then(|x| x.dynamic_cast::<Clamp>().ok())).filter_map(|x| x);
                         for clamp in clamps {
@@ -1595,6 +1766,11 @@ pub mod param_tuner {
                 SlaveParameterTunerMsg::SetPropellerReversed(index, reversed) => {
                     if let Some(deadzone) = self.propeller_deadzones.get_mut(index) {
                         deadzone.set_reversed(reversed);
+                    }
+                },
+                SlaveParameterTunerMsg::SetPropellerEnabled(index, enabled) => {
+                    if let Some(deadzone) = self.propeller_deadzones.get_mut(index) {
+                        deadzone.set_enabled(enabled);
                     }
                 },
                 SlaveParameterTunerMsg::SetP(index, value) => {

@@ -30,13 +30,14 @@ use gstreamer as gst;
 use gstreamer_app as gst_app;
 use gstreamer_rtsp as gst_rtsp;
 use gst::{Element, Event, Pad, PadProbeType, Pipeline, element_error, prelude::*, PadProbeReturn, PadProbeData, EventType, Caps, EventView};
+use serde::{Serialize, Deserialize};
 
 use crate::slave::{SlaveConfigModel, VideoAlgorithm};
 
 use strum::IntoEnumIterator;
 use strum_macros::{EnumIter, EnumString as EnumFromString, Display as EnumToString};
 
-#[derive(EnumIter, EnumFromString, PartialEq, Clone, Debug)]
+#[derive(EnumIter, EnumFromString, PartialEq, Clone, Debug, Serialize, Deserialize)]
 pub enum VideoEncoder {
     Copy, H264, H265, WebM
 }
@@ -52,7 +53,7 @@ impl ToString for VideoEncoder {
     }
 }
 
-#[derive(EnumIter, EnumFromString, PartialEq, Clone, Debug)]
+#[derive(EnumIter, EnumFromString, PartialEq, Clone, Debug, Serialize, Deserialize)]
 pub enum VideoDecoder {
     H264Software, H264HardwareNvidia, H264HardwareNvidiaStateless, H265Software, H265HardwareNvidia
 }

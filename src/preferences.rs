@@ -9,6 +9,7 @@ use adw::{ActionRow, ComboRow, EnumListModel, PreferencesGroup, PreferencesPage,
 use relm4::{AppUpdate, ComponentUpdate, Components, Model, RelmApp, RelmComponent, Widgets, actions::{ActionGroupName, ActionName, RelmAction, RelmActionGroup}, factory::FactoryVecDeque, send, new_action_group, new_stateful_action, new_stateless_action};
 use relm4_macros::widget;
 
+use serde::{Serialize, Deserialize};
 use strum::IntoEnumIterator;
 
 use crate::{AppModel, AppMsg, video::VideoDecoder};
@@ -17,7 +18,7 @@ use derivative::*;
 
 use crate::video::VideoEncoder;
 
-fn get_data_path() -> PathBuf {
+pub fn get_data_path() -> PathBuf {
     const app_dir_name: &str = "rovhost";
     let mut data_path = dirs::data_local_dir().expect("无法找到本地数据文件夹");
     data_path.push(app_dir_name);
@@ -27,7 +28,13 @@ fn get_data_path() -> PathBuf {
     data_path
 }
 
-fn get_video_path() -> PathBuf {
+pub fn get_preference_path() -> PathBuf {
+    let mut path = get_data_path();
+    path.push("preferences.json");
+    path
+}
+
+pub fn get_video_path() -> PathBuf {
     let mut video_path = get_data_path();
     video_path.push("Videos");
     if !video_path.exists() {
@@ -37,7 +44,7 @@ fn get_video_path() -> PathBuf {
 }
 
 #[tracker::track]
-#[derive(Derivative, Clone, PartialEq, Debug)]
+#[derive(Derivative, Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[derivative(Default)]
 pub struct PreferencesModel {
     #[derivative(Default(value="0"))]
@@ -59,6 +66,16 @@ pub struct PreferencesModel {
     pub default_video_decoder: VideoDecoder,
 }
 
+impl PreferencesModel {
+    pub fn load_or_default() -> PreferencesModel {
+        match fs::read_to_string(get_preference_path()).ok().and_then(|json| serde_json::from_str(&json).ok()) {
+            Some(model) => model,
+            None => Default::default(),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub enum PreferencesMsg {
     SetVideoSavePath(String),
     SetVideoEncoder(VideoEncoder),
@@ -69,6 +86,7 @@ pub enum PreferencesMsg {
     SetInputSendingRate(u16),
     SetDefaultKeepVideoDisplayRatio(bool),
     SetDefaultVideoDecoder(VideoDecoder),
+    SaveToFile,
 }
 
 impl Model for PreferencesModel {
@@ -87,6 +105,7 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
             set_modal: true,
             set_search_enabled: false,
             connect_close_request(sender) => move |window| {
+                send!(sender, PreferencesMsg::SaveToFile);
                 window.hide();
                 Inhibit(true)
             },
@@ -118,9 +137,9 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                     set_title: "连接",
                     add = &ActionRow {
                         set_title: "默认地址",
-                        set_subtitle: "第一机位的机器人使用的默认IPV4地址，其他机位的地址将在该基础上进行累加",
+                        set_subtitle: "第一机位的机器人使用的默认IPV4地址",
                         add_suffix = &Entry {
-                            set_text: track!(model.changed(PreferencesModel::default_slave_ipv4_address()), model.default_slave_ipv4_address.to_string().as_str()),
+                            set_text: track!(model.changed(PreferencesModel::default_slave_ipv4_address()), model.get_default_slave_ipv4_address().to_string().as_str()),
                             set_valign: Align::Center,
                             connect_changed(sender) => move |entry| {
                                 match Ipv4Addr::from_str(&entry.text()) {
@@ -149,7 +168,7 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                 set_icon_name: Some("input-gaming-symbolic"),
                 add = &PreferencesGroup {
                     set_title: "发送",
-                    set_description: Some("向下位机发送控制信号的设置"),
+                    set_description: Some("向下位机发送控制信号的设置（需要重新连接以应用更改）"),
                     add = &ActionRow {
                         set_title: "增量发送",
                         set_subtitle: "每次发送只发送相对上一次发送的变化值以节省数据发送量。",
@@ -235,8 +254,9 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                         set_title: "视频保存目录",
                         set_subtitle: track!(model.changed(PreferencesModel::video_save_path()), model.video_save_path.as_str()),
                         set_activatable: true,
-                        connect_activated(sender) => move |row| {
-                            
+                        connect_activated[sender = sender.clone(), model = model.clone()] => move |row| {
+                            let serialized = serde_json::to_string(&model);
+                            dbg!(serialized);
                         }
                     },
                     add = &ComboRow {
@@ -281,7 +301,9 @@ impl ComponentUpdate<AppModel> for PreferencesModel {
             PreferencesMsg::SetInputSendingRate(rate) => self.set_default_input_sending_rate(rate),
             PreferencesMsg::SetDefaultKeepVideoDisplayRatio(value) => self.set_default_keep_video_display_ratio(value),
             PreferencesMsg::SetDefaultVideoDecoder(decoder) => self.set_default_video_decoder(decoder),
+            PreferencesMsg::SaveToFile => serde_json::to_string_pretty(&self).ok().and_then(|json| fs::write(get_preference_path(), json).ok()).unwrap(),
         }
+        self.reset();
         send!(parent_sender, AppMsg::PreferencesUpdated(self.clone()));
     }
 }

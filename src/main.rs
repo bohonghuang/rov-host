@@ -23,6 +23,7 @@ mod prelude;
 mod video;
 mod input;
 mod graph_view;
+mod utils;
 
 use crate::{preferences::PreferencesMsg, slave::{SlaveConfigModel, SlaveConfigMsg, SlaveModel, SlaveStatusClass, SlaveVideoMsg}};
 
@@ -51,7 +52,7 @@ impl Widgets<AboutModel, AppModel> for AboutWidgets {
             },
             set_authors: &["黄博宏"],
             set_program_name: Some("水下机器人上位机"),
-            set_copyright: Some("© 2021 集美大学水下智能创新实验室"),
+            set_copyright: Some("© 2021-2022 集美大学水下智能创新实验室"),
             set_comments: Some("跨平台的校园水下机器人上位机程序"),
             set_logo_icon_name: Some("applications-games"),
             set_version: Some("0.0.1"),
@@ -182,7 +183,6 @@ impl Widgets<AppModel, ()> for AppWidgets {
     }
 
     fn post_view() {
-        
         if model.changed(AppModel::slaves()) {
             if model.get_slaves().len() == 0 {
                 self.body_stack.set_visible_child(&self.welcome_page);
@@ -209,7 +209,7 @@ impl Widgets<AppModel, ()> for AppWidgets {
         app_group.add_action(action_keybindings);
         app_group.add_action(action_about);
         app_window.insert_action_group("main", Some(&app_group.into_action_group()));
-        for _ in 0..*model.preferences.borrow().get_initial_slave_num() {
+        for _ in 0..*model.get_preferences().borrow().get_initial_slave_num() {
             send!(sender, AppMsg::NewSlave(app_window.clone().downgrade()));
         }
         
@@ -340,6 +340,7 @@ fn main() {
     gtk::init().map(|_| adw::init()).expect("无法初始化 GTK4");
     // sdl2::init().and_then(|sdl| init_joystick(&sdl)).expect("无法初始化 SDL2 用于手柄输入");
     let model = AppModel {
+        preferences: Rc::new(RefCell::new(PreferencesModel::load_or_default())),
         ..Default::default()
     };
     model.input_system.run();
