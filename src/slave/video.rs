@@ -1,41 +1,48 @@
-use std::borrow::BorrowMut;
-use std::cell::RefCell;
-use std::ffi::c_void;
-use std::marker::Send;
-use std::net::Ipv4Addr;
-use std::ops::Div;
-use std::rc::Rc;
-use std::str::FromStr;
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
+use std::{ffi::c_void, str::FromStr, sync::{Arc, Mutex}};
 
-use cv::core::{MatExpr, Scalar, VecN, MatExprResult};
-use cv::types::VectorOfMat;
-use fragile::Fragile;
-
-use gtk::gdk::Display;
-use gtk::gio::{Action, Icon, Menu, MenuItem, SimpleAction};
-use opencv as cv;
-use cv::{highgui, prelude::*, videoio, Result, imgproc, imgcodecs, core::Size};
-
-use gtk::{AboutDialog, Align, HeaderBar, IconLookupFlags, IconTheme, Label, MenuButton, ToggleButton, show_about_dialog};
-use gtk::gdk_pixbuf::{Colorspace, Pixbuf};
-use gtk::{Orientation, prelude::*};
-use gtk::{Application, ApplicationWindow, Button, Box as GtkBox, Image};
-
-use glib::{Error, Continue, MainContext, PRIORITY_DEFAULT, Sender, clone};
-
+use glib::{Sender, clone};
+use gtk::{gdk_pixbuf::{Colorspace, Pixbuf}, prelude::*};
 use gstreamer as gst;
 use gstreamer_app as gst_app;
-use gstreamer_rtsp as gst_rtsp;
-use gst::{Element, Event, Pad, PadProbeType, Pipeline, element_error, prelude::*, PadProbeReturn, PadProbeData, EventType, Caps, EventView};
+use gst::{Element, Pad, PadProbeType, Pipeline, element_error, prelude::*, PadProbeReturn, PadProbeData, EventView};
+
+use opencv as cv;
+use cv::{core::VecN, types::VectorOfMat};
+use cv::{prelude::*, Result, imgproc, core::Size};
+
 use serde::{Serialize, Deserialize};
 
-use crate::slave::{SlaveConfigModel, VideoAlgorithm};
-
-use strum::IntoEnumIterator;
 use strum_macros::{EnumIter, EnumString as EnumFromString, Display as EnumToString};
+
+use super::slave_config::SlaveConfigModel;
+use super::video_view::VideoAlgorithm;
+
+#[derive(EnumIter, EnumToString, EnumFromString, PartialEq, Clone, Copy, Debug, Serialize, Deserialize)]
+pub enum ImageFormat {
+    JPEG, PNG, TIFF, ICO, BMP
+}
+
+impl ImageFormat {
+    pub fn from_extension(extension: &str) -> Option<ImageFormat> {
+        match extension {
+            "jpg" | "jpeg" => Some(ImageFormat::JPEG),
+            "png" => Some(ImageFormat::PNG),
+            "tiff" => Some(ImageFormat::TIFF),
+            "ico" => Some(ImageFormat::ICO),
+            "bmp" => Some(ImageFormat::BMP),
+            _ => None, 
+        }
+    }
+    pub fn extension(&self) -> &'static str {
+        match self {
+            ImageFormat::JPEG => "jpg",
+            ImageFormat::PNG => "png",
+            ImageFormat::TIFF => "tiff",
+            ImageFormat::ICO => "ico",
+            ImageFormat::BMP => "bmp",
+        }
+    }
+}
 
 #[derive(EnumIter, EnumFromString, PartialEq, Clone, Debug, Serialize, Deserialize)]
 pub enum VideoEncoder {

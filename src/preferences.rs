@@ -1,22 +1,16 @@
 use std::{fs, net::Ipv4Addr, path::PathBuf, str::FromStr};
 
-use glib::{Sender, clone};
-
-use gtk::{Adjustment, Align, ApplicationWindow, Box as GtkBox, Button, Dialog, Entry, FileChooser, FileChooserDialog, Inhibit, Label, ListBox, ListBoxRow, MapListModel, Orientation, ResponseType, ScrolledWindow, SelectionModel, SpinButton, StringList, Switch, Viewport, Window, prelude::*};
-
-use adw::{ActionRow, ComboRow, EnumListModel, PreferencesGroup, PreferencesPage, PreferencesWindow, prelude::*};
-
-use relm4::{AppUpdate, ComponentUpdate, Components, Model, RelmApp, RelmComponent, Widgets, actions::{ActionGroupName, ActionName, RelmAction, RelmActionGroup}, factory::FactoryVecDeque, send, new_action_group, new_stateful_action, new_stateless_action};
+use glib::Sender;
+use gtk::{Align, Entry, Inhibit, Label, SpinButton, StringList, Switch, prelude::*};
+use adw::{PreferencesGroup, PreferencesPage, PreferencesWindow, prelude::*, ComboRow, ActionRow};
+use relm4::{ComponentUpdate, Model, Widgets, send};
 use relm4_macros::widget;
 
 use serde::{Serialize, Deserialize};
 use strum::IntoEnumIterator;
-
-use crate::{AppModel, AppMsg, video::VideoDecoder};
-
 use derivative::*;
 
-use crate::video::VideoEncoder;
+use crate::{AppModel, AppMsg, slave::video::{VideoEncoder, VideoDecoder, ImageFormat}};
 
 pub fn get_data_path() -> PathBuf {
     const app_dir_name: &str = "rovhost";
@@ -43,14 +37,27 @@ pub fn get_video_path() -> PathBuf {
     video_path
 }
 
+pub fn get_image_path() -> PathBuf {
+    let mut video_path = get_data_path();
+    video_path.push("Images");
+    if !video_path.exists() {
+        fs::create_dir(video_path.clone()).expect("无法创建图片文件夹");
+    }
+    video_path
+}
+
 #[tracker::track]
 #[derive(Derivative, Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[derivative(Default)]
 pub struct PreferencesModel {
     #[derivative(Default(value="0"))]
     pub initial_slave_num: u8,
-    #[derivative(Default(value="String::from(get_video_path().to_str().unwrap())"))]
-    pub video_save_path: String,
+    #[derivative(Default(value="get_video_path()"))]
+    pub video_save_path: PathBuf,
+    #[derivative(Default(value="get_image_path()"))]
+    pub image_save_path: PathBuf,
+    #[derivative(Default(value="ImageFormat::JPEG"))]
+    pub image_save_format: ImageFormat,
     #[derivative(Default(value="VideoEncoder::Copy"))]
     pub video_encoder: VideoEncoder,
     #[derivative(Default(value="Ipv4Addr::new(192, 168, 137, 219)"))]
@@ -77,7 +84,9 @@ impl PreferencesModel {
 
 #[derive(Debug)]
 pub enum PreferencesMsg {
-    SetVideoSavePath(String),
+    SetVideoSavePath(PathBuf),
+    SetImageSavePath(PathBuf),
+    SetImageSaveFormat(ImageFormat),
     SetVideoEncoder(VideoEncoder),
     SetSlaveDefaultIpv4Address(Ipv4Addr),
     SetSlaveDefaultPort(u16),
@@ -248,15 +257,41 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                     },
                 },
                 add = &PreferencesGroup {
+                    set_title: "截图",
+                    set_description: Some("画面的截图选项"),
+                    add = &ActionRow {
+                        set_title: "图片保存目录",
+                        set_subtitle: track!(model.changed(PreferencesModel::image_save_path()), model.image_save_path.to_str().unwrap()),
+                        set_activatable: true,
+                        connect_activated[sender = sender.clone(), window = window.clone().downgrade()] => move |row| {
+                            
+                        }
+                    },
+                    add = &ComboRow {
+                        set_title: "保存格式",
+                        set_subtitle: "截图保存的格式",
+                        set_model: Some(&{
+                            let model = StringList::new(&[]);
+                            for value in ImageFormat::iter() {
+                                model.append(&value.to_string());
+                            }
+                            model
+                        }),
+                        set_selected: track!(model.changed(PreferencesModel::image_save_format()), ImageFormat::iter().position(|x| x == model.image_save_format).unwrap() as u32),
+                        connect_selected_notify(sender) => move |row| {
+                            send!(sender, PreferencesMsg::SetImageSaveFormat(ImageFormat::iter().nth(row.selected() as usize).unwrap()))
+                        }
+                    },
+                },
+                add = &PreferencesGroup {
                     set_title: "录制",
                     set_description: Some("视频流的录制选项"),
                     add = &ActionRow {
                         set_title: "视频保存目录",
-                        set_subtitle: track!(model.changed(PreferencesModel::video_save_path()), model.video_save_path.as_str()),
+                        set_subtitle: track!(model.changed(PreferencesModel::video_save_path()), model.video_save_path.to_str().unwrap()),
                         set_activatable: true,
-                        connect_activated[sender = sender.clone(), model = model.clone()] => move |row| {
-                            let serialized = serde_json::to_string(&model);
-                            dbg!(serialized);
+                        connect_activated[sender = sender.clone(), window = window.clone().downgrade()] => move |row| {
+                            
                         }
                     },
                     add = &ComboRow {
@@ -302,6 +337,8 @@ impl ComponentUpdate<AppModel> for PreferencesModel {
             PreferencesMsg::SetDefaultKeepVideoDisplayRatio(value) => self.set_default_keep_video_display_ratio(value),
             PreferencesMsg::SetDefaultVideoDecoder(decoder) => self.set_default_video_decoder(decoder),
             PreferencesMsg::SaveToFile => serde_json::to_string_pretty(&self).ok().and_then(|json| fs::write(get_preference_path(), json).ok()).unwrap(),
+            PreferencesMsg::SetImageSavePath(path) => self.set_image_save_path(path),
+            PreferencesMsg::SetImageSaveFormat(format) => self.set_image_save_format(format),
         }
         self.reset();
         send!(parent_sender, AppMsg::PreferencesUpdated(self.clone()));

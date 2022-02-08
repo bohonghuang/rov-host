@@ -16,7 +16,6 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 use gtk::{gdk, gio::subclass::prelude::*, glib, pango, prelude::*};
-use std::{convert::TryInto, rc::Rc, cell::RefCell};
 
 use self::imp::FnBoxedPoint;
 

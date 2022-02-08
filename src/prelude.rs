@@ -1,4 +1,4 @@
-use glib::{Object, ObjectExt as GlibObjectExt, ObjectType};
+use glib::{ObjectExt as GlibObjectExt, ObjectType};
 
 pub trait ObjectExt {
     fn put_data<QD: 'static>(&self, key: &str, value: QD);

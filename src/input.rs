@@ -1,10 +1,10 @@
-use std::{borrow::Borrow, cell::RefCell, collections::HashMap, fmt::Debug, rc::Rc, sync::{Arc, Mutex}, time::Duration};
+use std::{cell::RefCell, collections::HashMap, fmt::Debug, rc::Rc, sync::{Arc, Mutex}, time::Duration, ops::Deref};
 
-use fragile::Fragile;
 use glib::{Continue, MainContext, PRIORITY_HIGH, Sender};
 use sdl2::{JoystickSubsystem, Sdl, event::Event, joystick::Joystick};
+use fragile::Fragile;
 
-use lazy_static::{__Deref, lazy_static};
+use lazy_static::lazy_static;
 
 #[derive(Debug, PartialEq, Clone, Eq)]
 pub enum InputSource {
@@ -51,7 +51,7 @@ impl Debug for InputSystem {
 
 impl Default for InputSystem {
     fn default() -> Self {
-        let sdl_fragile = SDL.deref().clone().unwrap();
+        let sdl_fragile = Deref::deref(&SDL).clone().unwrap();
         let sdl = sdl_fragile.get();
         // let sdl = sdl2::init().unwrap();
         let subsystem = sdl.joystick().unwrap();

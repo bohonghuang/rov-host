@@ -1,35 +1,25 @@
-use std::{cell::{Cell, RefCell}, collections::HashMap, net::Ipv4Addr, rc::Rc, time::SystemTime, path::PathBuf, str::FromStr};
+pub mod preferences;
+pub mod slave;
+pub mod prelude;
+pub mod input;
+pub mod graph_view;
+pub mod utils;
 
-use fragile::Fragile;
-use glib::{MainContext, PRIORITY_DEFAULT, PRIORITY_HIGH, Type, clone, Sender, WeakRef, DateTime};
+use std::{cell::RefCell, net::Ipv4Addr, rc::Rc, ops::Deref};
 
+use glib::{MainContext, clone, Sender, WeakRef, DateTime, PRIORITY_DEFAULT};
 use gstreamer as gst;
-
-use gtk::{AboutDialog, Align, Box as GtkBox, Button, CenterBox, Frame, Grid, Image, Inhibit, Label, MenuButton, Orientation, Stack, ToggleButton, gio::{Menu, MenuItem}, prelude::*};
-
-use adw::{ApplicationWindow, CenteringPolicy, ColorScheme, HeaderBar, StatusPage, StyleManager, prelude::*, Window};
-
-use input::{InputEvent, InputSource, InputSourceEvent, InputSystem};
-use preferences::PreferencesModel;
-use relm4::{AppUpdate, ComponentUpdate, Components, Model, RelmApp, RelmComponent, Widgets, actions::{ActionGroupName, ActionName, RelmAction, RelmActionGroup}, factory::{DynamicIndex, FactoryPrototype, FactoryVec, FactoryVecDeque, positions::GridPosition}, send, new_stateful_action, new_stateless_action, new_action_group};
+use gtk::{AboutDialog, Align, Box as GtkBox, Grid, Image, Inhibit, Label, MenuButton, Orientation, Stack, prelude::*, Button};
+use adw::{ApplicationWindow, CenteringPolicy, ColorScheme, HeaderBar, StatusPage, StyleManager, prelude::*};
+use relm4::{AppUpdate, ComponentUpdate, Model, RelmApp, RelmComponent, Widgets, actions::{RelmAction, RelmActionGroup}, factory::FactoryVec, send, new_stateless_action, new_action_group};
 use relm4_macros::widget;
-use lazy_static::{__Deref, lazy_static};
-use slave::{MyComponent, SlaveMsg};
-
-mod preferences;
-mod slave;
-mod components;
-mod prelude;
-mod video;
-mod input;
-mod graph_view;
-mod utils;
-
-use crate::{preferences::PreferencesMsg, slave::{SlaveConfigModel, SlaveConfigMsg, SlaveModel, SlaveStatusClass, SlaveVideoMsg}, utils::error_message};
-
-use sdl2::{JoystickSubsystem, Sdl, event::Event, joystick::Joystick};
 
 use derivative::*;
+
+use crate::input::{InputSystem, InputEvent};
+use crate::preferences::PreferencesModel;
+use crate::slave::{SlaveModel, MyComponent, SlaveMsg, slave_config::SlaveConfigModel, video_view::SlaveVideoMsg};
+use crate::utils::error_message;
 
 struct AboutModel {}
 enum AboutMsg {}
@@ -55,7 +45,7 @@ impl Widgets<AboutModel, AppModel> for AboutWidgets {
             set_copyright: Some("© 2021-2022 集美大学水下智能创新实验室"),
             set_comments: Some("跨平台的校园水下机器人上位机程序"),
             set_logo_icon_name: Some("applications-games"),
-            set_version: Some("0.0.1"),
+            set_version: Some("0.0.2"),
         }
     }
 }
@@ -69,6 +59,7 @@ impl ComponentUpdate<AppModel> for AboutModel {
 #[derive(Derivative)]
 #[derivative(Default)]
 pub struct AppModel {
+    #[derivative(Default(value="Some(false)"))]
     recording: Option<bool>,
     #[no_eq]
     #[derivative(Default(value="FactoryVec::new()"))]
@@ -302,7 +293,7 @@ impl AppUpdate for AppModel {
                         if self.slaves.iter().all(|x| x.model().unwrap().polling == Some(true) && x.model().unwrap().recording == Some(false)) {
                             for (index, component) in self.slaves.iter().enumerate() {
                                 let model = component.model().unwrap();
-                                let mut pathbuf = PathBuf::from_str(self.preferences.borrow().get_video_save_path()).unwrap();
+                                let mut pathbuf = self.preferences.borrow().get_video_save_path().clone();
                                 pathbuf.push(format!("{}_{}.mkv", DateTime::now_local().unwrap().format_iso8601().unwrap().replace(":", "-"), index + 1));
                                 model.get_video().send(SlaveVideoMsg::StartRecord(pathbuf)).unwrap();
                             }
@@ -332,15 +323,12 @@ impl AppUpdate for AppModel {
                     self.slaves.pop();
                     return true;
                 }
-                let slave_index = self.slaves.iter().enumerate().find_map(move |(index, component)| if component.model().unwrap().deref() as *const SlaveModel == slave_ptr { Some(index)} else { None }).unwrap();
+                let slave_index = self.slaves.iter().enumerate().find_map(move |(index, component)| if Deref::deref(&component.model().unwrap()) as *const SlaveModel == slave_ptr { Some(index)} else { None }).unwrap();
                 if slave_index == self.slaves.len() - 1 {
                     self.slaves.pop();
                 }
             },
         }
-        // for i in 0..self.slaves.len() {
-        //     self.get_mut_slaves().get_mut(i).unwrap().reset();
-        // }
         true
     }
 }
@@ -349,7 +337,7 @@ impl AppUpdate for AppModel {
 fn main() {
     gst::init().expect("无法初始化 GStreamer");
     gtk::init().map(|_| adw::init()).expect("无法初始化 GTK4");
-    // sdl2::init().and_then(|sdl| init_joystick(&sdl)).expect("无法初始化 SDL2 用于手柄输入");
+    
     let model = AppModel {
         preferences: Rc::new(RefCell::new(PreferencesModel::load_or_default())),
         ..Default::default()
@@ -357,7 +345,5 @@ fn main() {
     model.input_system.run();
     
     let relm = RelmApp::new(model);
-    // let win = ApplicationWindow::builder().build();
-    // win.set_content(content)
     relm.run()
 }
