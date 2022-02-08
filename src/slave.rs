@@ -1,7 +1,7 @@
 use std::{cell::{Cell, RefCell}, collections::{HashMap, VecDeque}, net::Ipv4Addr, path::PathBuf, rc::Rc, str::FromStr, sync::{Arc, Mutex}, fmt::Debug, thread, time::{Duration, SystemTime}};
 
 use fragile::Fragile;
-use glib::{MainContext, Object, PRIORITY_DEFAULT, Sender, Type, clone::{self, Upgrade}, WeakRef};
+use glib::{MainContext, Object, PRIORITY_DEFAULT, Sender, Type, clone::{self, Upgrade}, WeakRef, DateTime};
 
 use gstreamer as gst;
 use gst::{Pipeline, prelude::*};
@@ -28,7 +28,6 @@ use glib_macros::clone;
 
 use derivative::*;
 
-
 use self::param_tuner::SlaveParameterTunerModel;
 
 #[tracker::track(pub)]
@@ -45,6 +44,9 @@ pub struct SlaveModel {
     pub connected: Option<bool>,
     #[derivative(Default(value="Some(false)"))]
     pub polling: Option<bool>,
+    #[derivative(Default(value="Some(false)"))]
+    pub recording: Option<bool>,
+    pub sync_recording: bool,
     #[no_eq]
     pub preferences: Rc<RefCell<PreferencesModel>>,
     pub input_source: Option<InputSource>,
@@ -166,22 +168,39 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                         set_halign: Align::Start,
                         set_spacing: 5,
                         append = &Button {
-                            set_icon_name?: watch!(model.connected.map(|x| if x { "network-offline-symbolic" } else { "network-transmit-symbolic" })),
+                            set_icon_name: "network-transmit-symbolic",
                             set_sensitive: track!(model.changed(SlaveModel::connected()), model.connected != None),
                             set_css_classes?: watch!(model.connected.map(|x| if x { vec!["circular", "suggested-action"] } else { vec!["circular"] }).as_ref()),
-                            set_tooltip_text: Some("连接/断开连接"),
+                            set_tooltip_text: track!(model.changed(SlaveModel::connected()), model.connected.map(|x| if x { "断开连接" } else { "连接" })),
                             connect_clicked(sender) => move |button| {
                                 send!(sender, SlaveMsg::ToggleConnect);
                             },
                         },
                         append = &Button {
-                            set_icon_name?: watch!(model.polling.map(|x| if x { "media-playback-pause-symbolic" } else { "media-playback-start-symbolic" })),
-                            set_sensitive: track!(model.changed(SlaveModel::polling()), model.polling != None),
+                            set_icon_name: "emblem-videos-symbolic",
+                            set_sensitive: track!(model.changed(SlaveModel::sync_recording()) || model.changed(SlaveModel::polling()), model.polling != None && !model.sync_recording),
                             set_css_classes?: watch!(model.polling.map(|x| if x { vec!["circular", "destructive-action"] } else { vec!["circular"] }).as_ref()),
-                            set_css_classes: &["circular"],
-                            set_tooltip_text: Some("启动/停止视频"),
+                            set_tooltip_text: track!(model.changed(SlaveModel::polling()), model.polling.map(|x| if x { "停止拉流" } else { "启动拉流" })),
                             connect_clicked(sender) => move |button| {
                                 send!(sender, SlaveMsg::TogglePolling);
+                            },
+                        },
+                        append = &Button {
+                            set_icon_name: "camera-photo-symbolic",
+                            set_sensitive: watch!(model.video.model().get_pixbuf().is_some()),
+                            set_css_classes: &["circular"],
+                            set_tooltip_text: Some("画面截图"),
+                            connect_clicked(sender) => move |button| {
+                                send!(sender, SlaveMsg::TakeScreenshot);
+                            },
+                        },
+                        append = &Button {
+                            set_icon_name: "camera-video-symbolic",
+                            set_sensitive: track!(model.changed(SlaveModel::sync_recording()) || model.changed(SlaveModel::polling()) || model.changed(SlaveModel::recording()), !model.sync_recording && model.recording != None &&  model.polling == Some(true)),
+                            set_css_classes?: watch!(model.recording.map(|x| if x { vec!["circular", "destructive-action"] } else { vec!["circular"] }).as_ref()),
+                            set_tooltip_text: track!(model.changed(SlaveModel::recording()), model.polling.map(|x| if x { "停止录制" } else { "开始录制" })),
+                            connect_clicked(sender) => move |button| {
+                                send!(sender, SlaveMsg::ToggleRecord);
                             },
                         },
                     },
@@ -403,8 +422,12 @@ impl std::fmt::Debug for SlaveWidgets {
 
 pub enum SlaveMsg {
     ConfigUpdated,
+    ToggleRecord,
     ToggleConnect,
     TogglePolling,
+    PollingChanged(bool),
+    RecordingChanged(bool),
+    TakeScreenshot,
     SetInputSource(Option<InputSource>),
     UpdateInputSources,
     ToggleDisplayInfo,
@@ -562,13 +585,13 @@ impl MicroModel for SlaveModel {
                 match self.get_polling() {
                     Some(true) =>{
                         self.video.send(SlaveVideoMsg::StopPipeline).unwrap();
-                        self.set_polling(Some(false));
-                        self.config.send(SlaveConfigMsg::SetPolling(Some(false))).unwrap();
+                        self.set_polling(None);
+                        self.config.send(SlaveConfigMsg::SetPolling(None)).unwrap();
                     },
                     Some(false) => {
                         self.video.send(SlaveVideoMsg::StartPipeline).unwrap();
-                        self.set_polling(Some(true));
-                        self.config.send(SlaveConfigMsg::SetPolling(Some(true))).unwrap();
+                        self.set_polling(None);
+                        self.config.send(SlaveConfigMsg::SetPolling(None)).unwrap();
                     },
                     None => (),
                 }
@@ -628,7 +651,18 @@ impl MicroModel for SlaveModel {
                 }
             },
             SlaveMsg::DestroySlave => {
-                send!(parent_sender, AppMsg::DestroySlave(self as *const Self));
+                match (self.get_polling(), self.get_connected()) {
+                    (Some(polling), Some(connected)) => {
+                        if *polling {
+                            send!(self.video.sender(), SlaveVideoMsg::StopPipeline);
+                        }
+                        if *connected {
+                            send!(sender, SlaveMsg::ToggleConnect);
+                        }
+                        send!(parent_sender, AppMsg::DestroySlave(self as *const Self));
+                    },
+                    _ => (),
+                }
             },
             SlaveMsg::VideoPipelineError(msg) => {
                 error_message("错误", &msg, window.upgrade().as_ref());
@@ -649,6 +683,34 @@ impl MicroModel for SlaveModel {
             },
             SlaveMsg::ShowToastMessage(msg) => {
                 self.get_mut_toast_messages().borrow_mut().push_back(msg);
+            },
+	    SlaveMsg::ToggleRecord => {
+                let video = &self.video;
+                if video.model().record_handle.is_none() {
+                    let mut pathbuf = PathBuf::from_str(self.preferences.borrow().get_video_save_path()).unwrap();
+                    pathbuf.push(format!("{}.mkv", DateTime::now_local().unwrap().format_iso8601().unwrap().replace(":", "-")));
+                    send!(video.sender(), SlaveVideoMsg::StartRecord(pathbuf));
+                } else {
+                    send!(video.sender(), SlaveVideoMsg::StopRecord);
+                }
+                self.set_recording(None);
+            },
+            SlaveMsg::PollingChanged(polling) => {
+                self.set_polling(Some(polling));
+                self.config.send(SlaveConfigMsg::SetPolling(Some(polling))).unwrap();
+            },
+            SlaveMsg::RecordingChanged(recording) => {
+                if recording {
+                    if self.recording == Some(false) {
+                        self.set_sync_recording(true);
+                    }
+                } else {
+                    self.set_sync_recording(false);
+                }
+                self.set_recording(Some(recording));
+            },
+            SlaveMsg::TakeScreenshot => {
+                
             },
         }
     }
@@ -988,9 +1050,9 @@ pub struct SlaveConfigModel {
 }
 
 impl SlaveConfigModel {
-    pub fn new(ip: Ipv4Addr, port: u16, video_port: u16) -> Self {
+    pub fn new(ip: Ipv4Addr, port: u16, video_port: u16, video_decoder: VideoDecoder) -> Self {
         Self {
-            ip, port, video_port,
+            ip, port, video_port, video_decoder,
             ..Default::default()
         }
     }
@@ -1183,7 +1245,7 @@ pub enum SlaveVideoMsg {
     StartPipeline,
     StopPipeline,
     SetPixbuf(Option<Pixbuf>),
-    StartRecord(String),
+    StartRecord(PathBuf),
     StopRecord,
     ConfigUpdated(SlaveConfigModel),
 }
@@ -1193,25 +1255,31 @@ impl MicroModel for SlaveVideoModel {
     type Widgets = SlaveVideoWidgets;
     type Data = Sender<SlaveMsg>;
 
-    fn update(&mut self, msg: SlaveVideoMsg, parent_sender: &Sender<SlaveMsg>, sender: Sender<SlaveVideoMsg>) {
+    fn update(&mut self, msg: SlaveVideoMsg, parent_sender: &Sender<SlaveMsg>, sender: Sender<SlaveVideoMsg>){ 
         match msg {
-            SlaveVideoMsg::SetPixbuf(pixbuf) => self.set_pixbuf(pixbuf),
-            SlaveVideoMsg::StartRecord(file_name) => {
+            SlaveVideoMsg::SetPixbuf(pixbuf) => {
+                if self.get_pixbuf().is_none() {
+                    send!(parent_sender, SlaveMsg::PollingChanged(true)); // 主要是更新截图按钮的状态
+                }
+                self.set_pixbuf(pixbuf)
+            },
+            SlaveVideoMsg::StartRecord(pathbuf) => {
                 if let Some(pipeline) = &self.pipeline {
-                    let mut pathbuf = PathBuf::from_str(self.preferences.borrow().get_video_save_path()).unwrap();
-                    pathbuf.push(format!("{}.mkv", file_name));
-                    println!("{}", pathbuf.to_str().unwrap());
-                    let elements = video::create_queue_to_file(pathbuf.to_str().unwrap()).unwrap();
+                    let elements = self.config.lock().unwrap().video_decoder.gst_record_elements(&pathbuf.to_str().unwrap()).unwrap();
                     let pad = video::connect_elements_to_pipeline(pipeline, &elements).unwrap();
                     pipeline.set_state(gst::State::Playing).unwrap(); // 添加元素后会自动暂停，需要手动重新开始播放
+                    dbg!(pipeline.current_state());
                     self.record_handle = Some((pad, Vec::from(elements)));
+                    send!(parent_sender, SlaveMsg::RecordingChanged(true));
                 }
             },
             SlaveVideoMsg::StopRecord => {
                 if let Some(pipeline) = &self.pipeline {
-                    if let Some((teepad, elements)) = &self.record_handle{
+                    if let Some((teepad, elements)) = &self.record_handle {
                         video::disconnect_elements_to_pipeline(pipeline, teepad, elements).unwrap();
+                        send!(parent_sender, SlaveMsg::RecordingChanged(false));
                     }
+                    self.set_record_handle(None);
                 }
             },
             SlaveVideoMsg::ConfigUpdated(config) => {
@@ -1232,6 +1300,7 @@ impl MicroModel for SlaveVideoModel {
                         });
                         pipeline.set_state(gst::State::Playing).unwrap();
                         self.set_pipeline(Some(pipeline));
+                        send!(parent_sender, SlaveMsg::PollingChanged(true));
                     },
                     Err(msg) => {
                         send!(parent_sender, SlaveMsg::VideoPipelineError(String::from(msg)));
@@ -1240,10 +1309,14 @@ impl MicroModel for SlaveVideoModel {
             },
             SlaveVideoMsg::StopPipeline => {
                 assert!(self.pipeline != None);
+                if self.record_handle.is_some() {
+                    self.update(SlaveVideoMsg::StopRecord, parent_sender, sender.clone());
+                }
                 if let Some(pipeline) = &self.pipeline {
-                    pipeline.set_state(gst::State::Null);
+                    pipeline.set_state(gst::State::Null).unwrap();
                     self.pipeline = None;
                 }
+                send!(parent_sender, SlaveMsg::PollingChanged(false));
             },
         }
     }

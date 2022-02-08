@@ -53,7 +53,7 @@ impl ToString for VideoEncoder {
     }
 }
 
-#[derive(EnumIter, EnumFromString, PartialEq, Clone, Debug, Serialize, Deserialize)]
+#[derive(EnumIter, EnumFromString, PartialEq, Clone, Debug, Serialize, Deserialize, Copy)]
 pub enum VideoDecoder {
     H264Software, H264HardwareNvidia, H264HardwareNvidiaStateless, H265Software, H265HardwareNvidia
 }
@@ -71,7 +71,19 @@ impl ToString for VideoDecoder {
 }
 
 impl VideoDecoder {
-    pub fn gst_elements(&self) -> Result<(Vec<Element>, Vec<Element>), &'static str> {
+    pub fn gst_record_elements(&self, filename: &str) -> Result<Vec<Element>, &'static str> {
+        let parse = match self {
+            VideoDecoder::H264Software | VideoDecoder::H264HardwareNvidia | VideoDecoder::H264HardwareNvidiaStateless => gst::ElementFactory::make("h264parse", None).map_err(|_| "Missing element: h264parse")?,
+            VideoDecoder::H265Software | VideoDecoder::H265HardwareNvidia => gst::ElementFactory::make("h265parse", None).map_err(|_| "Missing element: h265parse")?,
+        };
+        let queue_to_file = gst::ElementFactory::make("queue", None).map_err(|_| "Missing element: queue")?;
+        let filesink = gst::ElementFactory::make("filesink", None).map_err(|_| "Missing element: filesink")?;
+        filesink.set_property("location", filename);
+        let matroskamux = gst::ElementFactory::make("matroskamux", None).map_err(|_| "Missing element: matroskamux")?;
+        Ok(vec![queue_to_file, parse, matroskamux, filesink])
+    }
+    
+    pub fn gst_main_elements(&self) -> Result<(Vec<Element>, Vec<Element>), &'static str> {
         match self {
             decoder_h264 @ (VideoDecoder::H264Software | VideoDecoder::H264HardwareNvidia | VideoDecoder::H264HardwareNvidiaStateless) => {
                 let rtph264depay = gst::ElementFactory::make("rtph264depay", None).map_err(|_| "Missing element: rtph264depay")?;
@@ -84,7 +96,7 @@ impl VideoDecoder {
                 };
                 dbg!(decoder_name);
                 let decoder = gst::ElementFactory::make(decoder_name, Some("video_decoder")).map_err(|_| "The configured video decoder is unavailable currently")?;
-                Ok((if decoder_h264 == &VideoDecoder::H264HardwareNvidia { vec![rtph264depay, h264parse] } else { vec![rtph264depay] }, vec![decoder]))
+                Ok((vec![rtph264depay], if decoder_h264 == &VideoDecoder::H264Software { vec![decoder] } else { vec![h264parse, decoder] }))
             },
             decoder_h265 @ (VideoDecoder::H265Software | VideoDecoder::H265HardwareNvidia) => {
                 let rtph265depay = gst::ElementFactory::make("rtph265depay", None).map_err(|_| "Missing element: rtph265depay")?;
@@ -96,7 +108,7 @@ impl VideoDecoder {
                 };
                 dbg!(decoder_name);
                 let decoder = gst::ElementFactory::make(decoder_name, Some("video_decoder")).map_err(|_| "The configured video decoder is unavailable currently")?;
-                Ok((vec![rtph265depay, h265parse], vec![decoder]))
+                Ok((vec![rtph265depay], vec![h265parse, decoder]))
             },
         }
     }
@@ -108,14 +120,6 @@ impl Default for VideoEncoder {
 
 impl Default for VideoDecoder {
     fn default() -> Self { Self::H264Software }
-}
-
-pub fn create_queue_to_file(filename: &str) -> Result<[gst::Element; 3], &'static str> {
-    let queue_to_file = gst::ElementFactory::make("queue", None).map_err(|_| "Missing element: queue")?;
-    let filesink = gst::ElementFactory::make("filesink", None).map_err(|_| "Missing element: filesink")?;
-    filesink.set_property("location", filename);
-    let matroskamux = gst::ElementFactory::make("matroskamux", None).map_err(|_| "Missing element: matroskamux")?;
-    Ok([queue_to_file, matroskamux, filesink])
 }
 
 pub fn connect_elements_to_pipeline(pipeline: &Pipeline, elements: &[Element]) -> Result<Pad, &'static str> {
@@ -132,7 +136,7 @@ pub fn connect_elements_to_pipeline(pipeline: &Pipeline, elements: &[Element]) -
     }
     let teepad = output_tee.request_pad_simple("src_%u").ok_or("Cannot request pad")?;
     let sinkpad = elements.first().unwrap().static_pad("sink").unwrap();
-    teepad.link(&sinkpad).map_err(|_| "Cannot link output_tee to matroskamux")?;
+    teepad.link(&sinkpad).unwrap();//.map_err(|_| "Cannot link output_tee to matroskamux")?;
     Ok(teepad)
 }
 
@@ -156,7 +160,7 @@ pub fn create_pipeline(port: u16, decoder: VideoDecoder) -> Result<gst::Pipeline
     let output_tee = gst::ElementFactory::make("tee", Some("output_tee")).map_err(|_| "Missing element: tee")?;
     let queue_to_app = gst::ElementFactory::make("queue", None).map_err(|_| "Missing element: queue")?;
     let videoconvert = gst::ElementFactory::make("videoconvert", None).map_err(|_| "Missing element: videoconvert")?;
-    let (depay_elements, decoder_elements) = decoder.gst_elements()?;
+    let (depay_elements, decoder_elements) = decoder.gst_main_elements()?;
     
     pipeline.add_many(&[&udpsrc, &appsink, &output_tee, &videoconvert, &queue_to_app]).map_err(|_| "Cannot create pipeline")?;
     for depay_element in &depay_elements {
@@ -288,7 +292,6 @@ pub fn attach_pipeline_callback(pipeline: &Pipeline, sender: Sender<Mat>, config
     appsink.set_callbacks(
         gst_app::AppSinkCallbacks::builder()
             .new_sample(clone!(@strong frame_size => move |appsink| {
-                println!("Appsink");
                 let (width, height) = frame_size.lock().unwrap().ok_or(gst::FlowError::Flushing)?;
                 let sample = appsink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
                 let buffer = sample.buffer().ok_or_else(|| {
@@ -310,9 +313,7 @@ pub fn attach_pipeline_callback(pipeline: &Pipeline, sender: Sender<Mat>, config
                 let _mat = unsafe {
                     Mat::new_rows_cols_with_data(height, width, cv::core::CV_8UC3, map.as_ptr() as *mut c_void, cv::core::Mat_AUTO_STEP)
                 }.map_err(|_| gst::FlowError::CustomError)?.clone();
-                dbg!((width, height));
                 let mut mat = _mat;// Mat::default();
-                // imgproc::cvt_color(&_mat, &mut mat, imgproc::COLOR_YUV2RGBA_I420, 3).expect("Cannot convert frame color!");
                 let mat = match config.lock() {
                     Ok(config) => {
                         match config.video_algorithms.first() {

@@ -1,7 +1,7 @@
-use std::{cell::{Cell, RefCell}, collections::HashMap, net::Ipv4Addr, rc::Rc};
+use std::{cell::{Cell, RefCell}, collections::HashMap, net::Ipv4Addr, rc::Rc, time::SystemTime, path::PathBuf, str::FromStr};
 
 use fragile::Fragile;
-use glib::{MainContext, PRIORITY_DEFAULT, PRIORITY_HIGH, Type, clone, Sender, WeakRef};
+use glib::{MainContext, PRIORITY_DEFAULT, PRIORITY_HIGH, Type, clone, Sender, WeakRef, DateTime};
 
 use gstreamer as gst;
 
@@ -25,7 +25,7 @@ mod input;
 mod graph_view;
 mod utils;
 
-use crate::{preferences::PreferencesMsg, slave::{SlaveConfigModel, SlaveConfigMsg, SlaveModel, SlaveStatusClass, SlaveVideoMsg}};
+use crate::{preferences::PreferencesMsg, slave::{SlaveConfigModel, SlaveConfigMsg, SlaveModel, SlaveStatusClass, SlaveVideoMsg}, utils::error_message};
 
 use sdl2::{JoystickSubsystem, Sdl, event::Event, joystick::Joystick};
 
@@ -102,7 +102,8 @@ impl Widgets<AppModel, ()> for AppWidgets {
         app_window = application_window() -> ApplicationWindow {
             set_title: Some("水下机器人上位机"),
             set_default_width: 1280,
-            set_default_height: 720, 
+            set_default_height: 720,
+            set_icon_name: Some("applications-games"),
             set_content = Some(&GtkBox) {
                 set_orientation: Orientation::Vertical,
                 append = &HeaderBar {
@@ -116,12 +117,12 @@ impl Widgets<AppModel, ()> for AppWidgets {
                                 set_icon_name?: watch!(model.recording.map(|x| Some(if x { "media-playback-stop-symbolic" } else { "media-record-symbolic" })))
                             },
                             append = &Label {
-                                set_label?: watch!(model.recording.map(|x| if x { "停止" } else { "录制" })),
+                                set_label?: watch!(model.recording.map(|x| if x { "停止" } else { "同步录制" })),
                             },
                         },
-                        set_visible: watch!(model.recording != None),
-                        connect_clicked(sender) => move |button| {
-                            send!(sender, AppMsg::ToggleRecording);
+                        set_visible: track!(model.changed(AppModel::slaves()), model.slaves.len() > 1),
+                        connect_clicked[sender = sender.clone(), window = app_window.clone().downgrade()] => move |button| {
+                            send!(sender, AppMsg::ToggleRecording(window.clone()));
                         }
                     },
                     pack_end = &MenuButton {
@@ -140,7 +141,7 @@ impl Widgets<AppModel, ()> for AppWidgets {
                     pack_end = &Button {
                         set_icon_name: "list-remove-symbolic",
                         set_tooltip_text: Some("移除机位"),
-                        set_sensitive: track!(model.changed(AppModel::recording()) || model.changed(AppModel::slaves()), model.get_slaves().len() > 0 && *model.get_recording() != Some(true)),
+                        set_sensitive: track!(model.changed(AppModel::recording()) || model.changed(AppModel::slaves()), model.get_slaves().len() > 0 && *model.get_recording() ==  Some(false)),
                         connect_clicked(sender) => move |button| {
                             send!(sender, AppMsg::DestroySlave(std::ptr::null()));
                         },
@@ -148,7 +149,7 @@ impl Widgets<AppModel, ()> for AppWidgets {
                     pack_end = &Button {
                         set_icon_name: "tab-new-symbolic",
                         set_tooltip_text: Some("新建机位"),
-                        set_sensitive: track!(model.changed(AppModel::recording()), model.recording != Some(true)),
+                        set_sensitive: track!(model.changed(AppModel::recording()), model.recording == Some(false)),
                         connect_clicked[sender = sender.clone(), window = app_window.clone().downgrade()] => move |button| {
                             send!(sender, AppMsg::NewSlave(window.clone()));
                         },
@@ -228,7 +229,7 @@ pub enum AppMsg {
     DestroySlave(*const SlaveModel),
     DispatchInputEvent(InputEvent),
     PreferencesUpdated(PreferencesModel),
-    ToggleRecording, 
+    ToggleRecording(WeakRef<ApplicationWindow>), 
     OpenAboutDialog,
     OpenPreferencesWindow,
     OpenKeybindingsWindow,
@@ -265,7 +266,7 @@ impl AppUpdate for AppModel {
                 let video_port = self.get_preferences().borrow().get_default_local_video_port().wrapping_add(index as u16);
                 let (input_event_sender, input_event_receiver) = MainContext::channel(PRIORITY_DEFAULT);
                 let (slave_event_sender, slave_event_receiver) = MainContext::channel(PRIORITY_DEFAULT);
-                let mut slave_config = SlaveConfigModel::new(Ipv4Addr::from(ip_octets), *self.get_preferences().clone().borrow().get_default_slave_port(), video_port);
+                let mut slave_config = SlaveConfigModel::new(Ipv4Addr::from(ip_octets), *self.get_preferences().borrow().get_default_slave_port(), video_port, *self.get_preferences().borrow().get_default_video_decoder());
                 slave_config.set_keep_video_display_ratio(*self.get_preferences().borrow().get_default_keep_video_display_ratio());
                 let slave = SlaveModel::new(slave_config, self.get_preferences().clone(), &slave_event_sender, input_event_sender);
                 let component = MyComponent::new(slave, (sender.clone(), app_window));
@@ -295,17 +296,27 @@ impl AppUpdate for AppModel {
                     }
                 }
             },
-            AppMsg::ToggleRecording => match self.recording {
+            AppMsg::ToggleRecording(window) => match self.recording {
                 Some(recording) => {
-                    for (index, component) in self.slaves.iter().enumerate() {
-                        let model = component.model().unwrap();
-                        if recording {
-                            model.get_video().send(SlaveVideoMsg::StopRecord).unwrap();
+                    if !recording {
+                        if self.slaves.iter().all(|x| x.model().unwrap().polling == Some(true) && x.model().unwrap().recording == Some(false)) {
+                            for (index, component) in self.slaves.iter().enumerate() {
+                                let model = component.model().unwrap();
+                                let mut pathbuf = PathBuf::from_str(self.preferences.borrow().get_video_save_path()).unwrap();
+                                pathbuf.push(format!("{}_{}.mkv", DateTime::now_local().unwrap().format_iso8601().unwrap().replace(":", "-"), index + 1));
+                                model.get_video().send(SlaveVideoMsg::StartRecord(pathbuf)).unwrap();
+                            }
+                            self.set_recording(Some(true));
                         } else {
-                            model.get_video().send(SlaveVideoMsg::StartRecord((index + 1).to_string())).unwrap();
+                            error_message("无法开始同步录制", "请确保所有机位均已启动拉流并未处于录制状态。", window.upgrade().as_ref()).present();
                         }
+                    } else {
+                        for (index, component) in self.slaves.iter().enumerate() {
+                            let model = component.model().unwrap();
+                            model.get_video().send(SlaveVideoMsg::StopRecord).unwrap();
+                        }
+                        self.set_recording(Some(false));
                     }
-                    self.set_recording(Some(!recording));
                 },
                 None => (),
             },
