@@ -10,7 +10,7 @@ use strum::IntoEnumIterator;
 use derivative::*;
 
 use crate::{preferences::PreferencesModel, slave::video::VideoDecoder};
-use super::{SlaveMsg, video_view::VideoAlgorithm};
+use super::{SlaveMsg, video::VideoAlgorithm};
 
 #[tracker::track(pub)]
 #[derive(Debug, Derivative, PartialEq, Clone)]

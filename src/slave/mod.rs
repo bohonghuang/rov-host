@@ -1,28 +1,29 @@
-pub mod video_view;
 pub mod video;
 pub mod param_tuner;
 pub mod slave_config;
+pub mod slave_video;
+pub mod firmware_update;
 
-use std::{cell::RefCell, collections::{HashMap, VecDeque}, path::PathBuf, rc::Rc, sync::{Arc, Mutex}, fmt::Debug, thread, time::{Duration, SystemTime}};
-use async_std::{net::TcpStream, prelude::*};
+use std::{cell::RefCell, collections::{HashMap, VecDeque}, rc::Rc, sync::{Arc, Mutex}, fmt::Debug, time::{Duration, SystemTime}, ops::Deref};
+use async_std::{net::TcpStream, prelude::*, task::JoinHandle};
 use async_std::task;
 
 use glib::{PRIORITY_DEFAULT, Sender, WeakRef, DateTime, MainContext};
 use glib_macros::clone;
-use gtk::{Align, Box as GtkBox, Button, CenterBox, CheckButton, Frame, Grid, Image, Label, ListBox, MenuButton, Orientation, Overlay, Popover, Revealer, Switch, ToggleButton, prelude::*, FileFilter, ProgressBar, FileChooserAction};
-use adw::{HeaderBar, PreferencesGroup, StatusPage, Window, prelude::*, Carousel, ApplicationWindow, ToastOverlay, Toast, ActionRow};
+use gtk::{prelude::*, Align, Box as GtkBox, Button, CenterBox, CheckButton, Frame, Grid, Image, Label, ListBox, MenuButton, Orientation, Overlay, Popover, Revealer, Switch, ToggleButton};
+use adw::{ApplicationWindow, ToastOverlay, Toast};
 use relm4::{WidgetPlus, factory::{FactoryPrototype, FactoryVec, positions::GridPosition}, send, MicroWidgets, MicroModel, MicroComponent};
 use relm4_macros::micro_widget;
 
 use serde::{Serialize, Deserialize};
 use derivative::*;
 
-use crate::input::{InputSource, InputSourceEvent, InputSystem};
+use crate::{input::{InputSource, InputSourceEvent, InputSystem}, slave::param_tuner::SlaveParameterTunerMsg};
 use crate::preferences::PreferencesModel;
 use crate::prelude::ObjectExt;
-use crate::utils::{select_path, error_message};
+use crate::ui::generic::error_message;
 use crate::AppMsg;
-use self::{param_tuner::SlaveParameterTunerModel, slave_config::{SlaveConfigModel, SlaveConfigMsg}, video_view::{SlaveVideoModel, SlaveVideoMsg}};
+use self::{param_tuner::SlaveParameterTunerModel, slave_config::{SlaveConfigModel, SlaveConfigMsg}, slave_video::{SlaveVideoModel, SlaveVideoMsg}, firmware_update::SlaveFirmwareUpdaterModel};
 
 #[tracker::track(pub)]
 #[derive(Debug, Derivative)]
@@ -428,12 +429,14 @@ pub enum SlaveMsg {
     TcpError(String),
     TcpConnectionChanged(Option<async_std::sync::Arc<TcpStream>>),
     ShowToastMessage(String),
+    TcpMessage(SlaveTcpMsg),
 }
 
 pub enum SlaveTcpMsg {
     Disconnect,
     SendString(String),
     ControlUpdated(ControlPacket),
+    Block(JoinHandle<()>),
 }
 
 async fn tcp_main_handler(input_rate: u16,
@@ -455,6 +458,7 @@ async fn tcp_main_handler(input_rate: u16,
 
     let connection_test_task = task::spawn(clone!(@strong idle, @strong tcp_sender, @strong tcp_stream, @strong last_action_timestamp => async move {
         let mut tcp_stream = &tcp_stream;
+        tcp_stream.flush().await.unwrap();
         loop {
             if tcp_sender.is_closed() {
                 return;
@@ -467,7 +471,6 @@ async fn tcp_main_handler(input_rate: u16,
                 }
             }
             task::sleep(Duration::from_millis(500)).await;
-            dbg!(current_millis());
         }
         tcp_sender.send(SlaveTcpMsg::Disconnect).await.unwrap();
     }));
@@ -495,7 +498,7 @@ async fn tcp_main_handler(input_rate: u16,
     
     loop {
         match tcp_receiver.recv().await {
-            Ok(msg) => {
+            Ok(msg) if *idle.lock().await => {
                 match msg {
                     SlaveTcpMsg::Disconnect => {
                         if tcp_stream.shutdown(std::net::Shutdown::Both).is_ok() {
@@ -520,9 +523,17 @@ async fn tcp_main_handler(input_rate: u16,
                         *control_packet.lock().await = Some(control);
                         *last_action_timestamp.lock().await = current_millis();
                     },
+                    SlaveTcpMsg::Block(blocker) => {
+                        *idle.lock().await = false;
+                        task::spawn(clone!(@strong idle => async move {
+                            blocker.await;
+                            *idle.lock().await = true;
+                        }));
+                    },
                 }
             },
-            Err(err) => println!("{}", err.to_string()),
+            _ => (),
+            // Err(err) => println!("{}", err.to_string()),
 
         }
     }
@@ -620,7 +631,7 @@ impl MicroModel for SlaveModel {
             SlaveMsg::OpenFirmwareUpater => {
                 match &self.tcp_stream {
                     Some(tcp_stream) => {
-                        let component = MicroComponent::new(SlaveFirmwareUpdaterModel::new(), ());
+                        let component = MicroComponent::new(SlaveFirmwareUpdaterModel::new(Deref::deref(tcp_stream).clone()), sender.clone());
                         component.root_widget().set_transient_for(Some(&window.upgrade().unwrap()));
                     },
                     None => {
@@ -631,8 +642,9 @@ impl MicroModel for SlaveModel {
             SlaveMsg::OpenParameterTuner => {
                 match &self.tcp_stream {
                     Some(tcp_stream) => {
-                        let component = MicroComponent::new(SlaveParameterTunerModel::new(tcp_stream.clone()), ());
+                        let component = MicroComponent::new(SlaveParameterTunerModel::new(*self.preferences.borrow().get_param_tuner_graph_view_point_num_limit()), sender.clone());
                         component.root_widget().set_transient_for(Some(&window.upgrade().unwrap()));
+                        send!(component.sender(), SlaveParameterTunerMsg::StartDebug(Deref::deref(tcp_stream).clone()));
                     },
                     None => {
                         error_message("错误", "请先连接连接下位机！", window.upgrade().as_ref());
@@ -704,182 +716,10 @@ impl MicroModel for SlaveModel {
                 pathbuf.push(format!("{}.{}", DateTime::now_local().unwrap().format_iso8601().unwrap().replace(":", "-"), format.extension()));
                 send!(self.video.sender(), SlaveVideoMsg::SaveScreenshot(pathbuf));
             },
-        }
-    }
-}
-
-pub enum SlaveFirmwareUpdaterMsg {
-    NextStep,
-    FirmwareFileSelected(PathBuf),
-    FirmwareUploadProgressUpdated(f32),
-}
-
-#[tracker::track(pub)]
-#[derive(Debug, Derivative)]
-#[derivative(Default)]
-pub struct SlaveFirmwareUpdaterModel {
-    current_page: u32,
-    firmware_file_path: Option<PathBuf>,
-    firmware_uploading_progress: f32,
-}
-
-impl SlaveFirmwareUpdaterModel {
-    pub fn new() -> SlaveFirmwareUpdaterModel {
-        SlaveFirmwareUpdaterModel { ..Default::default() }
-    }
-}
-
-impl MicroModel for SlaveFirmwareUpdaterModel {
-    type Msg = SlaveFirmwareUpdaterMsg;
-    type Widgets = SlaveFirmwareUpdaterWidgets;
-    type Data = ();
-    
-    fn update(&mut self, msg: SlaveFirmwareUpdaterMsg, data: &(), sender: Sender<SlaveFirmwareUpdaterMsg>) {
-        match msg {
-            SlaveFirmwareUpdaterMsg::NextStep => self.set_current_page(self.get_current_page().wrapping_add(1)),
-            SlaveFirmwareUpdaterMsg::FirmwareFileSelected(path) => self.set_firmware_file_path(Some(path)),
-            SlaveFirmwareUpdaterMsg::FirmwareUploadProgressUpdated(progress) => {
-                self.set_firmware_uploading_progress(progress);
-                if progress >= 1.0 {
-                    send!(sender, SlaveFirmwareUpdaterMsg::NextStep);
-                }
+            SlaveMsg::TcpMessage(msg) => {
+                self.tcp_msg_sender.as_ref().unwrap().try_send(msg).unwrap();
             },
         }
-    }
-}
-
-trait CarouselExt {
-    fn scroll_to_page(&self, page_index: u32, animate: bool);
-}
-
-impl CarouselExt for Carousel {
-    fn scroll_to_page(&self, page_index: u32, animate: bool) {
-        self.scroll_to(&self.nth_page(page_index), animate);
-    }
-}
-
-#[micro_widget(pub)]
-impl MicroWidgets<SlaveFirmwareUpdaterModel> for SlaveFirmwareUpdaterWidgets {
-    view! {
-        window = Window {
-            set_title: Some("固件更新向导"),
-            set_width_request: 480,
-            set_height_request: 480, 
-            set_modal: true,
-            set_visible: true,
-            set_content = Some(&GtkBox) {
-                set_orientation: Orientation::Vertical,
-                append = &HeaderBar {
-                    set_sensitive: track!(model.changed(SlaveFirmwareUpdaterModel::firmware_uploading_progress()), *model.get_firmware_uploading_progress() <= 0.0 || *model.get_firmware_uploading_progress() >= 1.0),
-                },
-                append: carousel = &Carousel {
-                    set_hexpand: true,
-                    set_vexpand: true,
-                    set_interactive: false,
-                    scroll_to_page: track!(model.changed(SlaveFirmwareUpdaterModel::current_page()), model.current_page, true),
-                    append = &StatusPage {
-                        set_icon_name: Some("software-update-available-symbolic"),
-                        set_title: "欢迎使用固件更新向导",
-                        set_hexpand: true,
-                        set_vexpand: true,
-                        set_description: Some("请确保固件更新期间机器人有充足的电量供应。"),
-                        set_child = Some(&Button) {
-                            set_css_classes: &["suggested-action", "pill"],
-                            set_halign: Align::Center,
-                            set_label: "下一步",
-                            connect_clicked(sender) => move |button| {
-                                send!(sender, SlaveFirmwareUpdaterMsg::NextStep);
-                            },
-                        },
-                    },
-                    append = &StatusPage {
-                        set_icon_name: Some("system-file-manager-symbolic"),
-                        set_title: "请选择固件文件",
-                        set_hexpand: true,
-                        set_vexpand: true,
-                        set_description: Some("选择的固件文件必须为下位机的可执行文件。"),
-                        set_child = Some(&GtkBox) {
-                            set_orientation: Orientation::Vertical,
-                            set_spacing: 50,
-                            append = &PreferencesGroup {
-                                add = &ActionRow {
-                                    set_title: "固件文件",
-                                    set_subtitle: track!(model.changed(SlaveFirmwareUpdaterModel::firmware_file_path()), &model.firmware_file_path.as_ref().map_or("请选择文件".to_string(), |path| path.to_str().unwrap().to_string())),
-                                    add_suffix: browse_firmware_file_button = &Button {
-                                        set_label: "浏览",
-                                        set_valign: Align::Center,
-                                        connect_clicked(sender, window) => move |button| {
-                                            let filter = FileFilter::new();
-                                            filter.add_suffix("bin");
-                                            filter.set_name(Some("固件文件"));
-                                            std::mem::forget(select_path(FileChooserAction::Open, &[filter], &window, clone!(@strong sender => move |path| {
-                                                match path {
-                                                    Some(path) => {
-                                                        send!(sender, SlaveFirmwareUpdaterMsg::FirmwareFileSelected(path));
-                                                    },
-                                                    None => (),
-                                                }
-                                            }))); // 内存泄露修复
-                                        },
-                                    },
-                                    set_activatable_widget: Some(&browse_firmware_file_button),
-                                },
-                            },
-                            append = &Button {
-                                set_css_classes: &["suggested-action", "pill"],
-                                set_halign: Align::Center,
-                                set_label: "开始更新",
-                                set_sensitive: track!(model.changed(SlaveFirmwareUpdaterModel::firmware_file_path()), model.get_firmware_file_path().as_ref().map_or(false, |pathbuf| pathbuf.exists() && pathbuf.is_file())),
-                                connect_clicked(sender) => move |button| {
-                                    send!(sender, SlaveFirmwareUpdaterMsg::NextStep);
-                                    thread::spawn(clone!(@strong sender => move || {
-                                        for i in 0 ..= 100 {
-                                            send!(sender, SlaveFirmwareUpdaterMsg::FirmwareUploadProgressUpdated((i as f32) / 100.0));
-                                            thread::sleep(Duration::from_millis(50));
-                                        }
-                                    }));
-                                },
-                            }
-                        },
-                    },
-                    append = &StatusPage {
-                        set_icon_name: Some("folder-download-symbolic"),
-                        set_title: "正在更新固件...",
-                        set_hexpand: true,
-                        set_vexpand: true,
-                        set_description: Some("请不要切断连接或电源。"),
-                        set_child = Some(&GtkBox) {
-                            set_orientation: Orientation::Vertical,
-                            set_spacing: 50,
-                            append = &ProgressBar {
-                                set_fraction: track!(model.changed(SlaveFirmwareUpdaterModel::firmware_uploading_progress()), *model.get_firmware_uploading_progress() as f64)
-                            },
-                        },
-                    },
-                    append = &StatusPage {
-                        set_icon_name: Some("emblem-ok-symbolic"),
-                        set_title: "固件更新完成",
-                        set_hexpand: true,
-                        set_vexpand: true,
-                        set_description: Some("机器人将自动重启，请稍后手动进行连接。"),
-                        set_child = Some(&Button) {
-                            set_css_classes: &["suggested-action", "pill"],
-                            set_halign: Align::Center,
-                            set_label: "完成",
-                            connect_clicked(window) => move |button| {
-                                window.destroy();
-                            },
-                        },
-                    },
-                },
-            },
-        }
-    }
-}
-
-impl Debug for SlaveFirmwareUpdaterWidgets {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.root_widget().fmt(f)
     }
 }
 
@@ -1018,6 +858,3 @@ impl ToString for ControlPacket {
         serde_json::to_string_pretty(self).unwrap()
     }
 }
-
-
-

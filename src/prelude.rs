@@ -1,4 +1,5 @@
 use glib::{ObjectExt as GlibObjectExt, ObjectType};
+use adw::Carousel;
 
 pub trait ObjectExt {
     fn put_data<QD: 'static>(&self, key: &str, value: QD);
@@ -15,5 +16,15 @@ impl<T: ObjectType> ObjectExt for T {
         unsafe {
             self.data(key).map(|x| x.as_ref())
         }
+    }
+}
+
+pub trait CarouselExt {
+    fn scroll_to_page(&self, page_index: u32, animate: bool);
+}
+
+impl CarouselExt for Carousel {
+    fn scroll_to_page(&self, page_index: u32, animate: bool) {
+        self.scroll_to(&self.nth_page(page_index), animate);
     }
 }

@@ -2,8 +2,7 @@ pub mod preferences;
 pub mod slave;
 pub mod prelude;
 pub mod input;
-pub mod graph_view;
-pub mod utils;
+pub mod ui;
 
 use std::{cell::RefCell, net::Ipv4Addr, rc::Rc, ops::Deref};
 
@@ -18,8 +17,8 @@ use derivative::*;
 
 use crate::input::{InputSystem, InputEvent};
 use crate::preferences::PreferencesModel;
-use crate::slave::{SlaveModel, MyComponent, SlaveMsg, slave_config::SlaveConfigModel, video_view::SlaveVideoMsg};
-use crate::utils::error_message;
+use crate::slave::{SlaveModel, MyComponent, SlaveMsg, slave_config::SlaveConfigModel, slave_video::SlaveVideoMsg};
+use crate::ui::generic::error_message;
 
 struct AboutModel {}
 enum AboutMsg {}
@@ -45,7 +44,7 @@ impl Widgets<AboutModel, AppModel> for AboutWidgets {
             set_copyright: Some("© 2021-2022 集美大学水下智能创新实验室"),
             set_comments: Some("跨平台的校园水下机器人上位机程序"),
             set_logo_icon_name: Some("applications-games"),
-            set_version: Some("0.0.2"),
+            set_version: Some("1.0.0-RC1"),
         }
     }
 }

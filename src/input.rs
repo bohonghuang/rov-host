@@ -115,12 +115,12 @@ impl InputSystem {
                             which,
                             ..
                         } => {
-                            let dead_zone = 2;
-                            if val > dead_zone || val < -dead_zone {
+                            // let dead_zone = 2;
+                            // if val > dead_zone || val < -dead_zone {
                                 // println!("Axis {} moved to {}", axis_idx, val);
-                            } else {
+                            // } else {
                                 // println!("Axis {} moved to {}", axis_idx, 0);
-                            }
+                            // }
                             sender.send(InputEvent(InputSource::Joystick(which), InputSourceEvent::AxisChanged(axis_idx, val))).unwrap();
                         }
                         Event::JoyButtonDown { button_idx, which, .. } => {
@@ -132,7 +132,7 @@ impl InputSystem {
                             //     *hi_freq = 65535;
                             // }
                             // if button_idx < 4 {
-                            //     match joystick.set_rumble(*lo_freq, *hi_freq, 300) {
+                            //     match joystick.set_rumble(*lo_freq, *hi_freq, 15000) {
                             //         Ok(()) => (), // println!("Set rumble to ({}, {})", lo_freq, hi_freq),
                             //         Err(e) => println!(
                             //             "Error setting rumble to ({}, {}): {:?}",
@@ -151,7 +151,7 @@ impl InputSystem {
                             //     *hi_freq = 65535;
                             // }
                             // if button_idx < 4 {
-                            //     match joystick.set_rumble(*lo_freq, *hi_freq, 300) {
+                            //     match joystick.set_rumble(*lo_freq, *hi_freq, 15000) {
                             //         Ok(()) => (), // println!("Set rumble to ({}, {})", lo_freq, hi_freq),
                             //         Err(e) => println!(
                             //             "Error setting rumble to ({}, {}): {:?}",

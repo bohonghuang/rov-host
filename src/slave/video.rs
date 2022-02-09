@@ -15,7 +15,6 @@ use serde::{Serialize, Deserialize};
 use strum_macros::{EnumIter, EnumString as EnumFromString, Display as EnumToString};
 
 use super::slave_config::SlaveConfigModel;
-use super::video_view::VideoAlgorithm;
 
 #[derive(EnumIter, EnumToString, EnumFromString, PartialEq, Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum ImageFormat {
@@ -42,6 +41,11 @@ impl ImageFormat {
             ImageFormat::BMP => "bmp",
         }
     }
+}
+
+#[derive(EnumIter, EnumToString, EnumFromString, PartialEq, Clone, Debug)]
+pub enum VideoAlgorithm {
+    CLAHE, Algorithm1, Algorithm2, Algorithm3, Algorithm4
 }
 
 #[derive(EnumIter, EnumFromString, PartialEq, Clone, Debug, Serialize, Deserialize)]

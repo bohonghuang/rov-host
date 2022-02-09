@@ -71,6 +71,8 @@ pub struct PreferencesModel {
     #[derivative(Default(value="true"))]
     pub default_keep_video_display_ratio: bool,
     pub default_video_decoder: VideoDecoder,
+    #[derivative(Default(value="64"))]
+    pub param_tuner_graph_view_point_num_limit: u16,
 }
 
 impl PreferencesModel {
@@ -95,6 +97,7 @@ pub enum PreferencesMsg {
     SetInputSendingRate(u16),
     SetDefaultKeepVideoDisplayRatio(bool),
     SetDefaultVideoDecoder(VideoDecoder),
+    SetParameterTunerGraphViewPointNumberLimit(u16),
     SaveToFile,
 }
 
@@ -311,6 +314,26 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                     }
                 }
             },
+            add = &PreferencesPage {
+                set_title: "调试",
+                set_icon_name: Some("utilities-system-monitor-symbolic"),
+                add = &PreferencesGroup {
+                    set_title: "控制环",
+                    set_description: Some("配置控制环调试选项"),
+                    add = &ActionRow {
+                        set_title: "可视化最大点数",
+                        set_subtitle: "绘制控制环可视化图表时使用最多使用多少个点，这将影响最多能观测的历史数据。",
+                        add_suffix = &SpinButton::with_range(1.0, 255.0, 1.0) {
+                            set_value: track!(model.changed(PreferencesModel::param_tuner_graph_view_point_num_limit()), model.param_tuner_graph_view_point_num_limit as f64),
+                            set_digits: 0,
+                            set_valign: Align::Center,
+                            connect_value_changed(sender) => move |button| {
+                                send!(sender, PreferencesMsg::SetParameterTunerGraphViewPointNumberLimit(button.value() as u16));
+                            }
+                        }
+                    }
+                }
+            },
         }
     }
 }
@@ -339,6 +362,7 @@ impl ComponentUpdate<AppModel> for PreferencesModel {
             PreferencesMsg::SaveToFile => serde_json::to_string_pretty(&self).ok().and_then(|json| fs::write(get_preference_path(), json).ok()).unwrap(),
             PreferencesMsg::SetImageSavePath(path) => self.set_image_save_path(path),
             PreferencesMsg::SetImageSaveFormat(format) => self.set_image_save_format(format),
+            PreferencesMsg::SetParameterTunerGraphViewPointNumberLimit(limit) => self.set_param_tuner_graph_view_point_num_limit(limit),
         }
         self.reset();
         send!(parent_sender, AppMsg::PreferencesUpdated(self.clone()));

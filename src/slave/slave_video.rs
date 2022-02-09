@@ -8,16 +8,10 @@ use adw::StatusPage;
 use relm4::{send, MicroWidgets, MicroModel};
 use relm4_macros::micro_widget;
 
-use strum_macros::{EnumIter, EnumString as EnumFromString, Display as EnumToString};
 use derivative::*;
 
 use crate::{preferences::PreferencesModel, slave::video::{MatExt, ImageFormat}};
 use super::{slave_config::SlaveConfigModel, SlaveMsg};
-
-#[derive(EnumIter, EnumToString, EnumFromString, PartialEq, Clone, Debug)]
-pub enum VideoAlgorithm {
-    CLAHE, Algorithm1, Algorithm2, Algorithm3, Algorithm4
-}
 
 #[tracker::track(pub)]
 #[derive(Debug, Derivative)]
