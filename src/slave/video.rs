@@ -105,7 +105,6 @@ impl VideoDecoder {
                     VideoDecoder::H264HardwareNvidiaStateless => "nvh264sldec",
                     _ => todo!(),
                 };
-                dbg!(decoder_name);
                 let decoder = gst::ElementFactory::make(decoder_name, Some("video_decoder")).map_err(|_| "The configured video decoder is unavailable currently")?;
                 Ok((vec![rtph264depay], if decoder_h264 == &VideoDecoder::H264Software { vec![decoder] } else { vec![h264parse, decoder] }))
             },

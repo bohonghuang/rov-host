@@ -28,6 +28,7 @@ pub enum SlaveFirmwareUpdaterMsg {
     NextStep,
     FirmwareFileSelected(PathBuf),
     FirmwareUploadProgressUpdated(f32),
+    FirmwareUploadFailed,
 }
 
 #[tracker::track(pub)]
@@ -90,13 +91,8 @@ impl MicroModel for SlaveFirmwareUpdaterModel {
                             Ok(mut file) => {
                                 let mut bytes = Vec::new();
                                 file.read_to_end(&mut bytes).await.unwrap();
-                                let mut bytes = bytes.as_slice();
+                                let bytes = bytes.as_slice();
                                 let md5_string = format!("{:x}", md5::compute(&bytes));
-                                // let mut reader = //base64_stream::ToBase64Reader::new(
-                                //     GzEncoder::new(&mut bytes /* mutable pointer */, Compression::fast())
-                                //);
-                                // let mut base64_compressed = String::new();
-                                // std::io::Read::read_to_string(&mut reader, &mut base64_compressed).unwrap();
                                 let packet = SlaveFirmwareUpdatePacket {
                                     firmware_update: SlaveFirmwarePacket {
                                         size: bytes.len(),
@@ -106,26 +102,36 @@ impl MicroModel for SlaveFirmwareUpdaterModel {
                                 };
                                 let json = serde_json::to_string(&packet).unwrap();
                                 let mut json_bytes = json.as_bytes();
-                                async_std::io::copy(&mut json_bytes, &mut tcp_stream).await.unwrap();
+                                if async_std::io::copy(&mut json_bytes, &mut tcp_stream).await.is_err() {
+                                    send!(sender, SlaveFirmwareUpdaterMsg::FirmwareUploadFailed);
+                                    return
+                                }
                                 let chunks = bytes.chunks(1024);
                                 let chunk_num = chunks.len();
                                 if chunk_num > 0 {
                                     for (chunk_index, chunk) in chunks.enumerate() {
-                                        tcp_stream.write(chunk).await.unwrap();
+                                        if tcp_stream.write(chunk).await.is_err() {
+                                            send!(sender, SlaveFirmwareUpdaterMsg::FirmwareUploadFailed);
+                                            return
+                                        }
                                         let progress = (chunk_index + 1) as f32 / chunk_num as f32;
                                         send!(sender, SlaveFirmwareUpdaterMsg::FirmwareUploadProgressUpdated(progress));
                                     }
-                                    tcp_stream.flush().await.unwrap();
+                                    if tcp_stream.flush().await.is_err() {
+                                        send!(sender, SlaveFirmwareUpdaterMsg::FirmwareUploadFailed);
+                                        return
+                                    }
                                 } else {
                                     send!(sender, SlaveFirmwareUpdaterMsg::FirmwareUploadProgressUpdated(1.0));
                                 }
                             },
-                            Err(_) => (),
+                            Err(_) => return,
                         }
                     }));
                     send!(parent_sender, SlaveMsg::TcpMessage(SlaveTcpMsg::Block(handle)));
                 }
             },
+            SlaveFirmwareUpdaterMsg::FirmwareUploadFailed => eprintln!("固件上传失败！"),
         }
     }
 }

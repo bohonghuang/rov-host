@@ -59,6 +59,44 @@ pub struct SlaveModel {
     pub tcp_stream: Option<async_std::sync::Arc<TcpStream>>,
     #[no_eq]
     pub toast_messages: Rc<RefCell<VecDeque<String>>>,
+    #[no_eq]
+    #[derivative(Default(value="FactoryVec::new()"))]
+    pub infos: FactoryVec<SlaveInfoModel>,
+}
+
+#[tracker::track(pub)]
+#[derive(Debug, Derivative)]
+#[derivative(Default)]
+pub struct SlaveInfoModel {
+    key: String,
+    value: String,
+}
+
+#[relm4::factory_prototype(pub)]
+impl FactoryPrototype for SlaveInfoModel {
+    type Factory = FactoryVec<Self>;
+    type Widgets = SlaveInfoWidgets;
+    type View = GtkBox;
+    type Msg = SlaveMsg;
+
+    view! {
+        entry = CenterBox {
+            set_orientation: Orientation::Horizontal,
+            set_hexpand: true,
+            set_start_widget = Some(&Label) {
+                set_valign: Align::Start,
+                set_markup: track!(self.changed(SlaveInfoModel::key()), &format!("<b>{}</b>", self.get_key())),
+            },
+            set_end_widget = Some(&Label) {
+                set_valign: Align::Start,
+                set_label: track!(self.changed(SlaveInfoModel::value()), self.get_value()),
+            }
+        }
+    }
+
+    fn position(&self, index: &usize) {
+        
+    }
 }
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
@@ -308,7 +346,7 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                                     append = &Revealer {
                                         set_reveal_child: watch!(model.slave_info_displayed),
                                         set_child = Some(&GtkBox) {
-                                            set_spacing: 2,
+                                            set_spacing: 5,
                                             set_margin_all: 5,
                                             set_orientation: Orientation::Vertical,
                                             set_halign: Align::Center,
@@ -353,25 +391,11 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                                                     },
                                                 },
                                             },
-                                            append = &Label {
-                                                set_halign: Align::Start,
-                                                set_text: "机位信息 1",
-                                            },
-                                            append = &Label {
-                                                set_halign: Align::Start,
-                                                set_text: "机位信息 2",
-                                            },
-                                            append = &Label {
-                                                set_halign: Align::Start,
-                                                set_text: "机位信息 3",
-                                            },
-                                            append = &Label {
-                                                set_halign: Align::Start,
-                                                set_text: "机位信息 4",
-                                            },
-                                            append = &Label {
-                                                set_halign: Align::Start,
-                                                set_text: "机位信息 5",
+                                            append = &GtkBox {
+                                                set_orientation: Orientation::Vertical,
+                                                set_spacing: 5,
+                                                set_hexpand: true,
+                                                factory!(model.infos),
                                             },
                                             append = &CenterBox {
                                                 set_hexpand: true,
@@ -430,6 +454,7 @@ pub enum SlaveMsg {
     TcpConnectionChanged(Option<async_std::sync::Arc<TcpStream>>),
     ShowToastMessage(String),
     TcpMessage(SlaveTcpMsg),
+    InformationsReceived(HashMap<String, String>),
 }
 
 pub enum SlaveTcpMsg {
@@ -474,6 +499,33 @@ async fn tcp_main_handler(input_rate: u16,
         }
         tcp_sender.send(SlaveTcpMsg::Disconnect).await.unwrap();
     }));
+
+    let receive_task = task::spawn(clone!(@strong tcp_sender, @strong idle, @strong slave_sender, @strong tcp_stream => async move {
+        let mut tcp_stream = tcp_stream.clone();
+        let mut buf = [0u8; 1024];
+        loop {
+            if *idle.lock().await {
+                buf.fill(0);
+                match tcp_stream.read(&mut buf).await {
+                    Ok(_) => {
+                        let json_string = match std::str::from_utf8(buf.split(|x| x.eq(&0)).next().unwrap()) {
+                            Ok(string) => string,
+                            Err(_) => continue,
+                        };
+                        let msg = serde_json::from_str::<SlaveInfoPacket>(&json_string);
+                        match msg {
+                            Ok(packet) => {
+                                send!(slave_sender, SlaveMsg::InformationsReceived(packet.info));
+                            },
+                            Err(err) => eprintln!("无法识别来自于下位机的JSON数据包（{}）：“{}”", err.to_string(), json_string),
+                        }
+                    },
+                    Err(_) => break,
+                };
+            }
+        }
+        tcp_sender.send(SlaveTcpMsg::Disconnect).await.unwrap();
+    }));
     
     let control_send_task = task::spawn(clone!(@strong idle, @strong tcp_sender, @strong tcp_stream, @strong control_packet => async move {
         let mut tcp_stream = &tcp_stream;
@@ -504,6 +556,7 @@ async fn tcp_main_handler(input_rate: u16,
                         if tcp_stream.shutdown(std::net::Shutdown::Both).is_ok() {
                             connection_test_task.cancel().await;
                             control_send_task.cancel().await;
+                            receive_task.cancel().await;
                             send!(slave_sender, SlaveMsg::TcpConnectionChanged(None));
                         } else {
                             send!(slave_sender, SlaveMsg::TcpError("连接意外终止".to_string()));
@@ -533,8 +586,6 @@ async fn tcp_main_handler(input_rate: u16,
                 }
             },
             _ => (),
-            // Err(err) => println!("{}", err.to_string()),
-
         }
     }
     tcp_receiver.close();
@@ -635,7 +686,7 @@ impl MicroModel for SlaveModel {
                         component.root_widget().set_transient_for(Some(&window.upgrade().unwrap()));
                     },
                     None => {
-                        error_message("错误", "请先连接连接下位机！", window.upgrade().as_ref());
+                        error_message("错误", "请确保下位机处于连接状态。", window.upgrade().as_ref());
                     },
                 }
             },
@@ -647,7 +698,7 @@ impl MicroModel for SlaveModel {
                         send!(component.sender(), SlaveParameterTunerMsg::StartDebug(Deref::deref(tcp_stream).clone()));
                     },
                     None => {
-                        error_message("错误", "请先连接连接下位机！", window.upgrade().as_ref());
+                        error_message("错误", "请确保下位机处于连接状态。", window.upgrade().as_ref());
                     },
                 }
             },
@@ -699,6 +750,7 @@ impl MicroModel for SlaveModel {
             SlaveMsg::PollingChanged(polling) => {
                 self.set_polling(Some(polling));
                 send!(self.config.sender(), SlaveConfigMsg::SetPolling(Some(polling)));
+                // send!(sender, SlaveMsg::InformationsReceived([("航向角".to_string(), "37°".to_string()), ("温度".to_string(), "25℃".to_string())].into_iter().collect())) // Debug
             },
             SlaveMsg::RecordingChanged(recording) => {
                 if recording {
@@ -718,6 +770,13 @@ impl MicroModel for SlaveModel {
             },
             SlaveMsg::TcpMessage(msg) => {
                 self.tcp_msg_sender.as_ref().unwrap().try_send(msg).unwrap();
+            },
+            SlaveMsg::InformationsReceived(info_map) => {
+                let infos = self.get_mut_infos();
+                infos.clear();
+                for (key, value) in info_map.into_iter() {
+                    infos.push(SlaveInfoModel { key, value, ..Default::default() });
+                }
             },
         }
     }
@@ -831,6 +890,11 @@ pub struct ControlPacket {
     rot: f32,
     depth_locked: bool,
     direction_locked: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct SlaveInfoPacket {
+    info: HashMap<String, String>,
 }
 
 impl ControlPacket {
