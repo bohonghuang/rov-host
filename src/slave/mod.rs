@@ -10,8 +10,8 @@ use async_std::task;
 
 use glib::{PRIORITY_DEFAULT, Sender, WeakRef, DateTime, MainContext};
 use glib_macros::clone;
-use gtk::{prelude::*, Align, Box as GtkBox, Button, CenterBox, CheckButton, Frame, Grid, Image, Label, ListBox, MenuButton, Orientation, Overlay, Popover, Revealer, Switch, ToggleButton};
-use adw::{ApplicationWindow, ToastOverlay, Toast};
+use gtk::{prelude::*, Align, Box as GtkBox, Button, CenterBox, CheckButton, Frame, Grid, Image, Label, ListBox, MenuButton, Orientation, Overlay, Popover, Revealer, Switch, ToggleButton, Widget, Separator, PackType};
+use adw::{ApplicationWindow, ToastOverlay, Toast, Flap};
 use relm4::{WidgetPlus, factory::{FactoryPrototype, FactoryVec, positions::GridPosition}, send, MicroWidgets, MicroModel, MicroComponent};
 use relm4_macros::micro_widget;
 
@@ -20,7 +20,6 @@ use derivative::*;
 
 use crate::{input::{InputSource, InputSourceEvent, InputSystem}, slave::param_tuner::SlaveParameterTunerMsg};
 use crate::preferences::PreferencesModel;
-use crate::prelude::ObjectExt;
 use crate::ui::generic::error_message;
 use crate::AppMsg;
 use self::{param_tuner::SlaveParameterTunerModel, slave_config::{SlaveConfigModel, SlaveConfigMsg}, slave_video::{SlaveVideoModel, SlaveVideoMsg}, firmware_update::SlaveFirmwareUpdaterModel};
@@ -62,6 +61,7 @@ pub struct SlaveModel {
     #[no_eq]
     #[derivative(Default(value="FactoryVec::new()"))]
     pub infos: FactoryVec<SlaveInfoModel>,
+    pub config_presented: bool,
 }
 
 #[tracker::track(pub)]
@@ -153,8 +153,17 @@ impl SlaveModel {
     }
 }
 
-pub fn input_sources_list_box(input_source: &Option<InputSource>, input_system: &InputSystem, sender: &Sender<SlaveMsg>) -> ListBox {
+pub fn input_sources_list_box(input_source: &Option<InputSource>, input_system: &InputSystem, sender: &Sender<SlaveMsg>) -> Widget {
     let sources = input_system.get_sources().unwrap();
+    if sources.is_empty() {
+        return Label::builder()
+            .label("无可用设备")
+            .margin_top(4)
+            .margin_bottom(4)
+            .margin_start(4)
+            .margin_end(4)
+            .build().upcast();
+    }
     let list_box = ListBox::builder().build();
     let mut radio_button_group: Option<CheckButton> = None;
     for (source, name) in sources {
@@ -177,7 +186,7 @@ pub fn input_sources_list_box(input_source: &Option<InputSource>, input_system: 
         }
         list_box.append(&radio_button);
     }
-    list_box
+    list_box.upcast()
 }
 
 #[micro_widget(pub)]
@@ -186,7 +195,6 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
         toast_overlay = ToastOverlay {
             add_toast?: watch!(model.get_toast_messages().borrow_mut().pop_front().map(|x| Toast::new(&x)).as_ref()),
             set_child = Some(&GtkBox) {
-                put_data: args!("sender", sender.clone()),
                 set_orientation: Orientation::Vertical,
                 append = &CenterBox {
                     set_css_classes: &["toolbar"],
@@ -205,7 +213,7 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                             },
                         },
                         append = &Button {
-                            set_icon_name: "emblem-videos-symbolic",
+                            set_icon_name: "video-display-symbolic",
                             set_sensitive: track!(model.changed(SlaveModel::sync_recording()) || model.changed(SlaveModel::polling()), model.polling != None && !model.sync_recording),
                             set_css_classes?: watch!(model.polling.map(|x| if x { vec!["circular", "destructive-action"] } else { vec!["circular"] }).as_ref()),
                             set_tooltip_text: track!(model.changed(SlaveModel::polling()), model.polling.map(|x| if x { "停止拉流" } else { "启动拉流" })),
@@ -251,7 +259,7 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                                         set_center_widget = Some(&Label) {
                                             set_margin_start: 10,
                                             set_margin_end: 10,
-                                            set_text: "输入设备"
+                                            set_markup: "<b>输入设备</b>"
                                         },
                                         set_end_widget = Some(&Button) {
                                             set_icon_name: "view-refresh-symbolic",
@@ -284,7 +292,7 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                             },
                         },
                         append = &Button {
-                            set_icon_name: "utilities-system-monitor-symbolic",
+                            set_icon_name: "preferences-other-symbolic",
                             set_css_classes: &["circular"],
                             set_tooltip_text: Some("参数调校"),
                             connect_clicked(sender) => move |button| {
@@ -295,10 +303,9 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                             set_icon_name: "emblem-system-symbolic",
                             set_css_classes: &["circular"],
                             set_tooltip_text: Some("机位设置"),
-                            put_data: args!("sender", model.config.sender().clone()),
-                            connect_active_notify => move |button| {
-                                let sender = button.get_data::<Sender<SlaveConfigMsg>>("sender").unwrap().clone();
-                                send!(sender, SlaveConfigMsg::TogglePresented);
+                            set_active: track!(model.changed(SlaveModel::config_presented()), *model.get_config_presented()),
+                            connect_active_notify(sender) => move |button| {
+                                send!(sender, SlaveMsg::SetConfigPresented(button.is_active()));
                             },
                         },
                         append = &ToggleButton {
@@ -312,9 +319,13 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                         },
                     },
                 },
-                append = &GtkBox {
-                    set_orientation: Orientation::Horizontal,
-                    append = &Overlay {
+                append = &Flap {
+                    set_flap: Some(model.config.root_widget()),
+                    set_reveal_flap: track!(model.changed(SlaveModel::config_presented()), *model.get_config_presented()),
+                    set_locked: true,
+                    set_flap_position: PackType::End,
+                    set_separator = Some(&Separator) {},
+                    set_content = Some(&Overlay) {
                         set_child: Some(model.video.root_widget()),
                         add_overlay = &GtkBox {
                             set_valign: Align::Start,
@@ -322,7 +333,7 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                             set_hexpand: true,
                             set_margin_all: 20, 
                             append = &Frame {
-                                set_css_classes: &["card"],
+                                add_css_class: "card",
                                 set_child = Some(&GtkBox) {
                                     set_orientation: Orientation::Vertical,
                                     set_margin_all: 5,
@@ -417,13 +428,15 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                                             },
                                         },
                                     },
-                                }
-                            }
-                        }
-                    }, 
-                    append: model.config.root_widget(),
+                                },
+                            },
+                        },
+                    },
+                    connect_reveal_flap_notify(sender) => move |flap| {
+                        send!(sender, SlaveMsg::SetConfigPresented(flap.reveals_flap()));
+                    },
                 },
-            }
+            },
         }
     }
 }
@@ -455,6 +468,7 @@ pub enum SlaveMsg {
     ShowToastMessage(String),
     TcpMessage(SlaveTcpMsg),
     InformationsReceived(HashMap<String, String>),
+    SetConfigPresented(bool),
 }
 
 pub enum SlaveTcpMsg {
@@ -778,6 +792,7 @@ impl MicroModel for SlaveModel {
                     infos.push(SlaveInfoModel { key, value, ..Default::default() });
                 }
             },
+            SlaveMsg::SetConfigPresented(presented) => self.set_config_presented(presented),
         }
     }
 }

@@ -18,7 +18,7 @@ use super::slave_config::SlaveConfigModel;
 
 #[derive(EnumIter, EnumToString, EnumFromString, PartialEq, Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum ImageFormat {
-    JPEG, PNG, TIFF, ICO, BMP
+    JPEG, PNG, TIFF, BMP
 }
 
 impl ImageFormat {
@@ -27,7 +27,6 @@ impl ImageFormat {
             "jpg" | "jpeg" => Some(ImageFormat::JPEG),
             "png" => Some(ImageFormat::PNG),
             "tiff" => Some(ImageFormat::TIFF),
-            "ico" => Some(ImageFormat::ICO),
             "bmp" => Some(ImageFormat::BMP),
             _ => None, 
         }
@@ -37,7 +36,6 @@ impl ImageFormat {
             ImageFormat::JPEG => "jpg",
             ImageFormat::PNG => "png",
             ImageFormat::TIFF => "tiff",
-            ImageFormat::ICO => "ico",
             ImageFormat::BMP => "bmp",
         }
     }
@@ -209,56 +207,24 @@ pub fn create_pipeline(port: u16, decoder: VideoDecoder) -> Result<gst::Pipeline
 }
 
 fn correct_underwater_color(src: Mat) -> Mat {
-    // cv::Mat image;
     let mut image = Mat::default();
-    // src.convertTo(image, CV_32FC3);
     src.convert_to(&mut image, cv::core::CV_32FC3, 1.0, 0.0).expect("Cannot convert src");
-    // image /= 255.0f;
     let image = (image / 255.0).into_result().unwrap();
-    // cv::split(image, tempVector);
     let mut channels = cv::types::VectorOfMat::new();
     cv::core::split(&image, &mut channels).expect("Cannot split image");
-    // cv::Mat b = tempVector[0], g = tempVector[1], r = tempVector[2];
-    // tempVector.clear();
-    // cv::Scalar mean, std;
     let [mut mean, mut std] = [cv::core::Scalar::default(); 2];
-    // cv::meanStdDev(image, mean, std);
     let image_original_size = image;
     let mut image = Mat::default();
     cv::imgproc::resize(&image_original_size, &mut image, Size::new(128, 128), 0.0, 0.0, imgproc::INTER_NEAREST).expect("Cannot resize image");
     cv::core::mean_std_dev(&image, &mut mean, &mut std, &cv::core::no_array()).expect("Cannot calculate mean std");
     const U: f64 = 3.0;
-    // #define b_std std[0]
-    // #define g_std std[1]
-    // #define r_std std[2]
-    // #define b_mean mean[0]
-    // #define g_mean mean[1]
-    // #define r_mean mean[2]
-    // float b_max = b_mean + u * b_std;
-    // float g_max = g_mean + u * g_std;
-    // float r_max = r_mean + u * r_std;
-    // float b_min = b_mean - u * b_std;
-    // float g_min = g_mean - u * g_std;
-    // float r_min = r_mean - u * r_std;
     let min_max = mean.iter().zip(std.iter()).map(|(mean, std)| (mean - U * std, mean + U * std));
-    // cv::Mat b_cr = (b - b_min) / (b_max - b_min) * 255.0f;
-    // cv::Mat g_cr = (g - g_min) / (g_max - g_min) * 255.0f;
-    // cv::Mat r_cr = (r - r_min) / (r_max - r_min) * 255.0f;
     let channels = channels.iter().zip(min_max).map(|(channel, (min, max))| (channel - VecN::from(min)) / (max - min) * 255.0).map(|x| x.into_result().and_then(|x| x.to_mat()).unwrap());
-    // tempVector.push_back(b_cr);
-    // tempVector.push_back(g_cr);
-    // tempVector.push_back(r_cr);
     let channels = VectorOfMat::from_iter(channels);
-    // cv::Mat image_cr;
-    // cv::merge(tempVector, image_cr);
     let mut image = Mat::default();
     cv::core::merge(&channels, &mut image).expect("Cannot merge channels");
-    // tempVector.clear();
-    // cv::Mat result;
-    // image_cr.convertTo(result, CV_8UC3);
     let mut result = Mat::default();
     image.convert_to(&mut result, cv::core::CV_8UC3, 1.0, 0.0).expect("Cannot convert result");
-    // return result;
     result
 }
 
@@ -320,10 +286,9 @@ pub fn attach_pipeline_callback(pipeline: &Pipeline, sender: Sender<Mat>, config
                     );
                     gst::FlowError::Error
                 })?;
-                let _mat = unsafe {
+                let mat = unsafe {
                     Mat::new_rows_cols_with_data(height, width, cv::core::CV_8UC3, map.as_ptr() as *mut c_void, cv::core::Mat_AUTO_STEP)
                 }.map_err(|_| gst::FlowError::CustomError)?.clone();
-                let mut mat = _mat;// Mat::default();
                 let mat = match config.lock() {
                     Ok(config) => {
                         match config.video_algorithms.first() {

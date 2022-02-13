@@ -6,7 +6,7 @@ use gstreamer as gst;
 use gst::prelude::*;
 use gtk::{Align, Box as GtkBox, Button, Image, Inhibit, Label, Orientation, SpinButton, Switch, prelude::*, FlowBox, Scale, SelectionMode};
 use adw::{HeaderBar, PreferencesGroup, PreferencesPage, PreferencesWindow, prelude::*, Clamp, Leaflet, ToastOverlay, ExpanderRow, ActionRow};
-use relm4::{Widgets, factory::{FactoryPrototype, FactoryVec}, send, MicroWidgets, MicroModel};
+use relm4::{factory::{FactoryPrototype, FactoryVec}, send, MicroWidgets, MicroModel};
 use relm4_macros::micro_widget;
 
 use serde::{Serialize, Deserialize};

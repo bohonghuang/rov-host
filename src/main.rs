@@ -8,7 +8,7 @@ use std::{cell::RefCell, net::Ipv4Addr, rc::Rc, ops::Deref};
 
 use glib::{MainContext, clone, Sender, WeakRef, DateTime, PRIORITY_DEFAULT};
 use gstreamer as gst;
-use gtk::{AboutDialog, Align, Box as GtkBox, Grid, Image, Inhibit, Label, MenuButton, Orientation, Stack, prelude::*, Button};
+use gtk::{AboutDialog, Align, Box as GtkBox, Grid, Image, Inhibit, Label, MenuButton, Orientation, Stack, prelude::*, Button, ToggleButton};
 use adw::{ApplicationWindow, CenteringPolicy, ColorScheme, HeaderBar, StatusPage, StyleManager, prelude::*};
 use relm4::{AppUpdate, ComponentUpdate, Model, RelmApp, RelmComponent, Widgets, actions::{RelmAction, RelmActionGroup}, factory::FactoryVec, send, new_stateless_action, new_action_group};
 use relm4_macros::widget;
@@ -43,7 +43,7 @@ impl Widgets<AboutModel, AppModel> for AboutWidgets {
             set_program_name: Some("水下机器人上位机"),
             set_copyright: Some("© 2021-2022 集美大学水下智能创新实验室"),
             set_comments: Some("跨平台的校园水下机器人上位机程序"),
-            set_logo_icon_name: Some("applications-games"),
+            set_logo_icon_name: Some("input-gaming"),
             set_version: Some("1.0.0-RC2"),
         }
     }
@@ -60,6 +60,7 @@ impl ComponentUpdate<AppModel> for AboutModel {
 pub struct AppModel {
     #[derivative(Default(value="Some(false)"))]
     recording: Option<bool>,
+    fullscreened: bool, 
     #[no_eq]
     #[derivative(Default(value="FactoryVec::new()"))]
     slaves: FactoryVec<MyComponent<SlaveModel>>,
@@ -93,7 +94,8 @@ impl Widgets<AppModel, ()> for AppWidgets {
             set_title: Some("水下机器人上位机"),
             set_default_width: 1280,
             set_default_height: 720,
-            set_icon_name: Some("applications-games"),
+            set_icon_name: Some("input-gaming"),
+            set_fullscreened: track!(model.changed(AppModel::fullscreened()), *model.get_fullscreened()),
             set_content = Some(&GtkBox) {
                 set_orientation: Orientation::Vertical,
                 append = &HeaderBar {
@@ -126,6 +128,14 @@ impl Widgets<AppModel, ()> for AppWidgets {
                         set_tooltip_text: Some("切换配色方案"),
                         connect_clicked(sender) => move |button| {
                             send!(sender, AppMsg::SwitchColorScheme);
+                        }
+                    },
+                    pack_end = &ToggleButton {
+                        set_icon_name: "view-fullscreen-symbolic",
+                        set_tooltip_text: Some("切换全屏模式"),
+                        set_active: track!(model.changed(AppModel::fullscreened()), *model.get_fullscreened()),
+                        connect_clicked(sender) => move |button| {
+                            send!(sender, AppMsg::SetFullscreened(button.is_active()));
                         }
                     },
                     pack_end = &Button {
@@ -219,7 +229,8 @@ pub enum AppMsg {
     DestroySlave(*const SlaveModel),
     DispatchInputEvent(InputEvent),
     PreferencesUpdated(PreferencesModel),
-    ToggleRecording(WeakRef<ApplicationWindow>), 
+    ToggleRecording(WeakRef<ApplicationWindow>),
+    SetFullscreened(bool),
     OpenAboutDialog,
     OpenPreferencesWindow,
     OpenKeybindingsWindow,
@@ -327,6 +338,7 @@ impl AppUpdate for AppModel {
                     self.slaves.pop();
                 }
             },
+            AppMsg::SetFullscreened(fullscreened) => self.set_fullscreened(fullscreened),
         }
         true
     }
@@ -342,7 +354,6 @@ fn main() {
         ..Default::default()
     };
     model.input_system.run();
-    
     let relm = RelmApp::new(model);
     relm.run()
 }

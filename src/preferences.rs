@@ -316,7 +316,7 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
             },
             add = &PreferencesPage {
                 set_title: "调试",
-                set_icon_name: Some("utilities-system-monitor-symbolic"),
+                set_icon_name: Some("preferences-other-symbolic"),
                 add = &PreferencesGroup {
                     set_title: "控制环",
                     set_description: Some("配置控制环调试选项"),

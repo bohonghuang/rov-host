@@ -42,7 +42,7 @@ impl MicroModel for SlaveVideoModel {
     type Widgets = SlaveVideoWidgets;
     type Data = Sender<SlaveMsg>;
 
-    fn update(&mut self, msg: SlaveVideoMsg, parent_sender: &Sender<SlaveMsg>, sender: Sender<SlaveVideoMsg>){ 
+    fn update(&mut self, msg: SlaveVideoMsg, parent_sender: &Sender<SlaveMsg>, sender: Sender<SlaveVideoMsg>) {
         match msg {
             SlaveVideoMsg::SetPixbuf(pixbuf) => {
                 if self.get_pixbuf().is_none() {
@@ -130,7 +130,7 @@ impl MicroWidgets<SlaveVideoModel> for SlaveVideoWidgets {
                 set_vexpand: true,
                 set_hexpand: true,
                 add_child = &StatusPage {
-                    set_icon_name: Some("help-browser-symbolic"),
+                    set_icon_name: Some("face-uncertain-symbolic"),
                     set_title: "无信号",
                     set_description: Some("请点击上方按钮启动视频拉流"),
                     set_visible: track!(model.changed(SlaveVideoModel::pixbuf()), model.pixbuf == None),
