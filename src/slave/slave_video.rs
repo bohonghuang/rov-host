@@ -1,6 +1,6 @@
 use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::{Arc, Mutex}, fmt::Debug};
 
-use glib::{MainContext, Sender};
+use glib::{MainContext, Sender, clone};
 use gstreamer as gst;
 use gst::{Pipeline, prelude::*};
 use gtk::{Box as GtkBox, Stack, gdk_pixbuf::Pixbuf, prelude::*, Picture};
@@ -24,7 +24,24 @@ pub struct SlaveVideoModel {
     #[no_eq]
     pub config: Arc<Mutex<SlaveConfigModel>>,
     pub record_handle: Option<(gst::Pad, Vec<gst::Element>)>,
+    #[derivative(Default(value="Rc::new(RefCell::new(PreferencesModel::load_or_default()))"))]
     pub preferences: Rc<RefCell<PreferencesModel>>, 
+}
+
+impl SlaveVideoModel {
+    pub fn new(preferences: Rc<RefCell<PreferencesModel>>) -> Self {
+        SlaveVideoModel {
+            preferences,
+            ..Default::default()
+        }
+    }
+    pub fn is_running(&self) -> bool {
+        self.pipeline.is_some()
+    }
+
+    pub fn is_recording(&self) -> bool {
+        self.record_handle.is_some()
+    }
 }
 
 pub enum SlaveVideoMsg {
@@ -35,6 +52,7 @@ pub enum SlaveVideoMsg {
     StopRecord,
     ConfigUpdated(SlaveConfigModel),
     SaveScreenshot(PathBuf),
+    RequestFrame,
 }
 
 impl MicroModel for SlaveVideoModel {
@@ -43,6 +61,7 @@ impl MicroModel for SlaveVideoModel {
     type Data = Sender<SlaveMsg>;
 
     fn update(&mut self, msg: SlaveVideoMsg, parent_sender: &Sender<SlaveMsg>, sender: Sender<SlaveVideoMsg>) {
+        self.reset();
         match msg {
             SlaveVideoMsg::SetPixbuf(pixbuf) => {
                 if self.get_pixbuf().is_none() {
@@ -52,12 +71,29 @@ impl MicroModel for SlaveVideoModel {
             },
             SlaveVideoMsg::StartRecord(pathbuf) => {
                 if let Some(pipeline) = &self.pipeline {
-                    let elements = self.config.lock().unwrap().video_decoder.gst_record_elements(&pathbuf.to_str().unwrap()).unwrap();
-                    let pad = super::video::connect_elements_to_pipeline(pipeline, &elements).unwrap();
-                    pipeline.set_state(gst::State::Playing).unwrap(); // 添加元素后会自动暂停，需要手动重新开始播放
-                    dbg!(pipeline.current_state());
-                    self.record_handle = Some((pad, Vec::from(elements)));
-                    send!(parent_sender, SlaveMsg::RecordingChanged(true));
+                    let preferences = self.preferences.borrow();
+                    let encoder = preferences.get_default_video_encoder();
+                    let record_handle = match encoder {
+                        Some(encoder) => {
+                            let elements = encoder.gst_record_elements(&pathbuf.to_str().unwrap());
+                            let elements_and_pad = elements.and_then(|elements| super::video::connect_elements_to_pipeline(pipeline, "tee_decoded", &elements).map(|pad| (elements, pad)));
+                            elements_and_pad
+                        },
+                        None => {
+                            let elements = self.config.lock().unwrap().video_decoder.gst_record_elements(&pathbuf.to_str().unwrap());
+                            let elements_and_pad = elements.and_then(|elements| super::video::connect_elements_to_pipeline(pipeline, "tee_raw", &elements).map(|pad| (elements, pad)));
+                            elements_and_pad
+                        },
+                    };
+                    match record_handle {
+                        Ok((elements, pad)) => {
+                            self.record_handle = Some((pad, Vec::from(elements)));
+                            send!(parent_sender, SlaveMsg::RecordingChanged(true));
+                        },
+                        Err(err) => {
+                            send!(parent_sender, SlaveMsg::ErrorMessage(err.to_string()));
+                        },
+                    }
                 }
             },
             SlaveVideoMsg::StopRecord => {
@@ -90,26 +126,43 @@ impl MicroModel for SlaveVideoModel {
                         send!(parent_sender, SlaveMsg::PollingChanged(true));
                     },
                     Err(msg) => {
-                        send!(parent_sender, SlaveMsg::VideoPipelineError(String::from(msg)));
+                        send!(parent_sender, SlaveMsg::ErrorMessage(String::from(msg)));
+                        send!(parent_sender, SlaveMsg::PollingChanged(false));
                     },
                 }
             },
             SlaveVideoMsg::StopPipeline => {
                 assert!(self.pipeline != None);
-                if self.record_handle.is_some() {
+                if self.is_recording() {
                     self.update(SlaveVideoMsg::StopRecord, parent_sender, sender.clone());
                 }
                 if let Some(pipeline) = &self.pipeline {
-                    pipeline.set_state(gst::State::Null).unwrap();
+                    let sinkpad = pipeline.by_name("display").unwrap().sink_pads().into_iter().next().unwrap();
+                    pipeline.send_event(gst::event::Eos::new());
+                    sinkpad.add_probe(gst::PadProbeType::EVENT_BOTH, clone!(@strong pipeline, @strong parent_sender => move |_pad, info| {
+                        match &info.data {
+                            Some(gst::PadProbeData::Event(event)) => {
+                                if let gst::EventView::Eos(_) = event.view() {
+                                    send!(parent_sender, SlaveMsg::PollingChanged(false));
+                                }
+                            },
+                            _ => (),
+                        }
+                        gst::PadProbeReturn::Remove
+                    }));
                     self.pipeline = None;
                 }
-                send!(parent_sender, SlaveMsg::PollingChanged(false));
             },
             SlaveVideoMsg::SaveScreenshot(pathbuf) => {
                 assert!(self.pixbuf != None);
                 if let Some(pixbuf) = &self.pixbuf {
                     let format = pathbuf.extension().unwrap().to_str().and_then(ImageFormat::from_extension).unwrap();
                     pixbuf.savev(&pathbuf, &format.to_string().to_lowercase(), &[]).unwrap();
+                }
+            },
+            SlaveVideoMsg::RequestFrame => {
+                if let Some(pipeline) = &self.pipeline {
+                    pipeline.by_name("display").unwrap().dynamic_cast::<gstreamer_app::AppSink>() .unwrap().send_event(gst::event::CustomDownstream::new(gst::Structure::new("resend", &[])));
                 }
             },
         }

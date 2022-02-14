@@ -45,7 +45,8 @@ impl MicroModel for SlaveConfigModel {
     type Msg = SlaveConfigMsg;
     type Widgets = SlaveConfigWidgets;
     type Data = Sender<SlaveMsg>;
-    fn update(&mut self, msg: SlaveConfigMsg, parent_sender: &Sender<SlaveMsg>, sender: Sender<SlaveConfigMsg>) {
+    fn update(&mut self, msg: SlaveConfigMsg, parent_sender: &Sender<SlaveMsg>, _sender: Sender<SlaveConfigMsg>) {
+        self.reset();
         match msg {
             SlaveConfigMsg::SetIp(ip) => self.set_ip(ip),
             SlaveConfigMsg::SetPort(port) => self.set_port(port),
@@ -138,7 +139,7 @@ impl MicroWidgets<SlaveConfigModel> for SlaveConfigWidgets {
                                 add_suffix: default_keep_video_display_ratio_switch = &Switch {
                                     set_active: track!(model.changed(SlaveConfigModel::keep_video_display_ratio()), *model.get_keep_video_display_ratio()),
                                     set_valign: Align::Center,
-                                    connect_state_set(sender) => move |switch, state| {
+                                    connect_state_set(sender) => move |_switch, state| {
                                         send!(sender, SlaveConfigMsg::SetKeepVideoDisplayRatio(state));
                                         Inhibit(false)
                                     }

@@ -65,15 +65,7 @@ impl PropellerModel {
             ..Default::default()
         }
     }
-
-    fn vec_from_map(map: &HashMap<String, Propeller>) -> Vec<PropellerModel> {
-        map.iter().map(|(key, value)| {
-            let Propeller { lower, upper, power, enabled, .. } = value.clone();
-            let key = key.clone();
-            PropellerModel { key, lower, upper, power, enabled, .. Default::default() }
-        }).collect()
-    }
-
+    
     fn vec_to_map(v: Vec<&PropellerModel>) -> HashMap<String, Propeller> {
         v.iter().map(|model| {
             let PropellerModel { key, lower, upper, power, enabled, .. } = Deref::deref(model).clone();
@@ -139,14 +131,6 @@ impl ControlLoopModel {
             ..Default::default()
         }
     }
-
-    fn vec_from_map<'a>(map: HashMap<String, ControlLoop>) -> Vec<ControlLoopModel>  {
-        map.iter().map(|(key, value)| {
-            let ControlLoop { p, i, d } = value.clone();
-            let key = key.clone();
-            ControlLoopModel { key, p, i, d, .. Default::default() }
-        }).collect()
-    }
     
     fn vec_to_map(v: Vec<&ControlLoopModel>) -> HashMap<String, ControlLoop> {
         v.iter().map(|model| {
@@ -206,7 +190,7 @@ impl FactoryPrototype for PropellerModel {
                             add_suffix: reversed_switch = &Switch {
                                 set_valign: Align::Center,
                                 set_active: track!(self.changed(PropellerModel::power()), self.is_reversed()),
-                                connect_state_set(sender, key) => move |switch, state| {
+                                connect_state_set(sender, key) => move |_switch, state| {
                                     send!(sender, SlaveParameterTunerMsg::SetPropellerReversed(key, state));
                                     Inhibit(false)
                                 }
@@ -282,7 +266,7 @@ impl FactoryPrototype for PropellerModel {
         }
     }
 
-    fn position(&self, index: &usize) {
+    fn position(&self, _index: &usize) {
         
     }
 }
@@ -384,7 +368,7 @@ impl FactoryPrototype for ControlLoopModel {
         }
     }
     
-    fn position(&self, index: &usize) {
+    fn position(&self, _index: &usize) {
         
     }
 }
@@ -465,7 +449,7 @@ impl MicroWidgets<SlaveParameterTunerModel> for SlaveParameterTunerWidgets {
                                         set_label: "保存",
                                     },
                                 },
-                                connect_clicked(sender) => move |button| {
+                                connect_clicked(sender) => move |_button| {
                                     send!(sender, SlaveParameterTunerMsg::ApplyParameters);
                                 },
                             },
@@ -481,7 +465,7 @@ impl MicroWidgets<SlaveParameterTunerModel> for SlaveParameterTunerWidgets {
                                         set_label: "读取",
                                     },
                                 },
-                                connect_clicked(sender) => move |button| {
+                                connect_clicked(sender) => move |_button| {
                                     send!(sender, SlaveParameterTunerMsg::ResetParameters);
                                 },
                             },
@@ -490,7 +474,7 @@ impl MicroWidgets<SlaveParameterTunerModel> for SlaveParameterTunerWidgets {
                 }
                 Some("参数调校")
             },
-            connect_close_request(sender) => move |window| {
+            connect_close_request(sender) => move |_window| {
                 send!(sender, SlaveParameterTunerMsg::StopDebug);
                 Inhibit(false)
             },
@@ -656,6 +640,7 @@ impl MicroModel for SlaveParameterTunerModel {
     type Data = Sender<SlaveMsg>;
     
     fn update(&mut self, msg: SlaveParameterTunerMsg, parent_sender: &Sender<SlaveMsg>, sender: Sender<SlaveParameterTunerMsg>) {
+        self.reset();
         match msg {
             SlaveParameterTunerMsg::SetPropellerLowerDeadzone(index, value) => {
                 if let Some(deadzone) = self.propellers.get_mut(index) {

@@ -37,7 +37,7 @@ mod imp {
         prelude::*,
         subclass::prelude::*,
     };
-    use std::{cell::RefCell, convert::TryInto, f64::consts::PI, rc::Rc};
+    use std::{cell::RefCell, f64::consts::PI, rc::Rc};
 
     #[derive(Clone, glib::Boxed)]
     #[boxed_type(name = "FnBoxedPoint")]
@@ -162,7 +162,7 @@ mod imp {
 
             cr.save().unwrap();
 
-            for (i, point) in inner.points.iter().enumerate() {
+            for (i, _point) in inner.points.iter().enumerate() {
                 let layout = widget.create_pango_layout(None);
                 let (_, extents) = layout.extents();
 
@@ -396,7 +396,7 @@ impl GraphView {
     pub fn set_points(&self, points: Vec<Point>) {
         let layout = self.create_pango_layout(Some("Graph"));
         let (_, extents) = layout.extents();
-        let datapoint_width = pango::units_to_double(extents.width()) + f64::from(HALF_X_PADDING);
+        let _datapoint_width = pango::units_to_double(extents.width()) + f64::from(HALF_X_PADDING);
 
         // self.set_size_request(
         //     (datapoint_width as usize * points.len())
@@ -429,13 +429,11 @@ impl GraphView {
 
     fn on_motion_event(
         &self,
-        x: f64,
-        y: f64,
+        _x: f64,
+        _y: f64,
         allow_touch: bool,
         controller: &impl IsA<gtk::EventController>,
     ) {
-        let mut inner = self.imp().inner.borrow_mut();
-
         // Don't handle touch events, we do that via Gtk.GestureClick.
         if !allow_touch {
             if let Some(device) = controller.current_event_device() {

@@ -8,7 +8,7 @@ use std::{cell::RefCell, net::Ipv4Addr, rc::Rc, ops::Deref};
 
 use glib::{MainContext, clone, Sender, WeakRef, DateTime, PRIORITY_DEFAULT};
 use gstreamer as gst;
-use gtk::{AboutDialog, Align, Box as GtkBox, Grid, Image, Inhibit, Label, MenuButton, Orientation, Stack, prelude::*, Button, ToggleButton};
+use gtk::{AboutDialog, Align, Box as GtkBox, Grid, Image, Inhibit, Label, MenuButton, Orientation, Stack, prelude::*, Button, ToggleButton, Separator, License};
 use adw::{ApplicationWindow, CenteringPolicy, ColorScheme, HeaderBar, StatusPage, StyleManager, prelude::*};
 use relm4::{AppUpdate, ComponentUpdate, Model, RelmApp, RelmComponent, Widgets, actions::{RelmAction, RelmActionGroup}, factory::FactoryVec, send, new_stateless_action, new_action_group};
 use relm4_macros::widget;
@@ -35,7 +35,7 @@ impl Widgets<AboutModel, AppModel> for AboutWidgets {
             set_transient_for: parent!(Some(&parent_widgets.app_window)),
             set_destroy_with_parent: true,
             set_modal: true,
-            connect_close_request(sender) => move |window| {
+            connect_close_request => move |window| {
                 window.hide();
                 Inhibit(true)
             },
@@ -44,14 +44,15 @@ impl Widgets<AboutModel, AppModel> for AboutWidgets {
             set_copyright: Some("© 2021-2022 集美大学水下智能创新实验室"),
             set_comments: Some("跨平台的校园水下机器人上位机程序"),
             set_logo_icon_name: Some("input-gaming"),
-            set_version: Some("1.0.0-RC2"),
+            set_version: Some("1.0.0-RC3"),
+            set_license_type: License::Gpl30,
         }
     }
 }
 
 impl ComponentUpdate<AppModel> for AboutModel {
-    fn init_model(parent_model: &AppModel) -> Self { AboutModel {} }
-    fn update(&mut self, msg: AboutMsg, components: &(), sender: Sender<AboutMsg>, parent_sender: Sender<AppMsg>) {}
+    fn init_model(_parent_model: &AppModel) -> Self { AboutModel {} }
+    fn update(&mut self, _msg: AboutMsg, _components: &(), _sender: Sender<AboutMsg>, _parent_sender: Sender<AppMsg>) {}
 }
 
 #[tracker::track]
@@ -113,7 +114,7 @@ impl Widgets<AppModel, ()> for AppWidgets {
                             },
                         },
                         set_visible: track!(model.changed(AppModel::slaves()), model.slaves.len() > 1),
-                        connect_clicked[sender = sender.clone(), window = app_window.clone().downgrade()] => move |button| {
+                        connect_clicked[sender = sender.clone(), window = app_window.clone().downgrade()] => move |__button| {
                             send!(sender, AppMsg::ToggleRecording(window.clone()));
                         }
                     },
@@ -126,7 +127,7 @@ impl Widgets<AppModel, ()> for AppWidgets {
                     pack_end = &Button {
                         set_icon_name: "night-light-symbolic",
                         set_tooltip_text: Some("切换配色方案"),
-                        connect_clicked(sender) => move |button| {
+                        connect_clicked(sender) => move |__button| {
                             send!(sender, AppMsg::SwitchColorScheme);
                         }
                     },
@@ -138,37 +139,38 @@ impl Widgets<AppModel, ()> for AppWidgets {
                             send!(sender, AppMsg::SetFullscreened(button.is_active()));
                         }
                     },
+                    pack_end = &Separator {},
                     pack_end = &Button {
                         set_icon_name: "list-remove-symbolic",
                         set_tooltip_text: Some("移除机位"),
                         set_sensitive: track!(model.changed(AppModel::recording()) || model.changed(AppModel::slaves()), model.get_slaves().len() > 0 && *model.get_recording() ==  Some(false)),
-                        connect_clicked(sender) => move |button| {
+                        connect_clicked(sender) => move |_button| {
                             send!(sender, AppMsg::DestroySlave(std::ptr::null()));
                         },
                     },
                     pack_end = &Button {
-                        set_icon_name: "tab-new-symbolic",
+                        set_icon_name: "list-add-symbolic",
                         set_tooltip_text: Some("新建机位"),
                         set_sensitive: track!(model.changed(AppModel::recording()), model.recording == Some(false)),
-                        connect_clicked[sender = sender.clone(), window = app_window.clone().downgrade()] => move |button| {
+                        connect_clicked[sender = sender.clone(), window = app_window.clone().downgrade()] => move |_button| {
                             send!(sender, AppMsg::NewSlave(window.clone()));
                         },
                     },
                 },
-                append: body_stack = &Stack  {
+                append: body_stack = &Stack {
+                    set_hexpand: true,
+                    set_vexpand: true,
                     add_child: welcome_page = &StatusPage {
-                        set_icon_name: Some("tab-new-symbolic"),
+                        set_icon_name: Some("window-new-symbolic"),
                         set_title: "无机位",
                         set_description: Some("请点击标题栏右侧按钮添加机位"),
                     },
                     add_child: slaves_page = &Grid {
-                        set_hexpand: true,
-                        set_vexpand: true,
                         factory!(model.slaves),
                     },
                 },
             },
-            connect_close_request(sender) => move |window| {
+            connect_close_request(sender) => move |_window| {
                 send!(sender, AppMsg::StopInputSystem);
                 Inhibit(false)
             },
@@ -252,6 +254,7 @@ impl AppUpdate for AppModel {
         components: &AppComponents,
         sender: Sender<AppMsg>,
     ) -> bool {
+        self.reset();
         match msg {
             AppMsg::OpenAboutDialog => {
                 components.about.root_widget().present();
@@ -297,10 +300,10 @@ impl AppUpdate for AppModel {
                     }
                 }
             },
-            AppMsg::ToggleRecording(window) => match self.recording {
+            AppMsg::ToggleRecording(window) => match *self.get_recording() {
                 Some(recording) => {
                     if !recording {
-                        if self.slaves.iter().all(|x| x.model().unwrap().polling == Some(true) && x.model().unwrap().recording == Some(false)) {
+                        if self.slaves.iter().all(|x| *x.model().unwrap().get_polling() == Some(true) && *x.model().unwrap().get_recording() == Some(false)) {
                             for (index, component) in self.slaves.iter().enumerate() {
                                 let model = component.model().unwrap();
                                 let mut pathbuf = self.preferences.borrow().get_video_save_path().clone();
@@ -312,7 +315,7 @@ impl AppUpdate for AppModel {
                             error_message("无法开始同步录制", "请确保所有机位均已启动拉流并未处于录制状态。", window.upgrade().as_ref()).present();
                         }
                     } else {
-                        for (index, component) in self.slaves.iter().enumerate() {
+                        for (_index, component) in self.get_slaves().iter().enumerate() {
                             let model = component.model().unwrap();
                             model.get_video().send(SlaveVideoMsg::StopRecord).unwrap();
                         }
@@ -330,12 +333,12 @@ impl AppUpdate for AppModel {
             },
             AppMsg::DestroySlave(slave_ptr) => {
                 if slave_ptr == std::ptr::null() {
-                    self.slaves.pop();
-                    return true;
-                }
-                let slave_index = self.slaves.iter().enumerate().find_map(move |(index, component)| if Deref::deref(&component.model().unwrap()) as *const SlaveModel == slave_ptr { Some(index)} else { None }).unwrap();
-                if slave_index == self.slaves.len() - 1 {
-                    self.slaves.pop();
+                    self.get_mut_slaves().pop();
+                } else {
+                    let slave_index = self.get_slaves().iter().enumerate().find_map(move |(index, component)| if Deref::deref(&component.model().unwrap()) as *const SlaveModel == slave_ptr { Some(index)} else { None }).unwrap();
+                    if slave_index == self.get_slaves().len() - 1 {
+                        self.get_mut_slaves().pop();
+                    }
                 }
             },
             AppMsg::SetFullscreened(fullscreened) => self.set_fullscreened(fullscreened),

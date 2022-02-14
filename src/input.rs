@@ -37,7 +37,7 @@ pub struct InputSystem {
 }
 
 impl InputSystem {
-    pub fn get_sources(&self) -> Result<Vec<(InputSource, String)>, String>{
+    pub fn get_sources(&self) -> Result<Vec<(InputSource, String)>, String> {
         let num = self.subsystem.num_joysticks()?;
         Ok((0..num).map(|index| (InputSource::Joystick(index), self.subsystem.name_for_index(index).unwrap_or("未知设备".to_string()))).collect())
     }
@@ -53,7 +53,6 @@ impl Default for InputSystem {
     fn default() -> Self {
         let sdl_fragile = Deref::deref(&SDL).clone().unwrap();
         let sdl = sdl_fragile.get();
-        // let sdl = sdl2::init().unwrap();
         let subsystem = sdl.joystick().unwrap();
         InputSystem::new(&sdl, &subsystem)
     }
@@ -65,7 +64,7 @@ impl InputSystem {
         sys_receriver.attach(None, |msg| {
             match msg {
                 InputSystemMessage::RetrieveJoystickList =>(),
-                InputSystemMessage::Connect(id) => (),
+                InputSystemMessage::Connect(_id) => (),
             }
             Continue(true)
         });
@@ -77,7 +76,6 @@ impl InputSystem {
             event_sender,
             messsage_sender: sys_sender,
             running: Arc::new(Mutex::new(false)),
-            // joysticks: Rc::new(HashMap::new()),
         }
     }
 
@@ -95,7 +93,7 @@ impl InputSystem {
                     Some((id, (c, (0, 0))))
                 }
                 Err(e) => {
-                    println!("failed: {:?}", e);
+                    println!("Failed: {:?}", e);
                     None
                 }
             }).collect();
@@ -125,7 +123,7 @@ impl InputSystem {
                         }
                         Event::JoyButtonDown { button_idx, which, .. } => {
                             // println!("Button {} down", button_idx);
-                            let (joystick, (lo_freq, hi_freq)) = joysticks.get_mut(&which).unwrap();
+                            let (_joystick, (_lo_freq, _hi_freq)) = joysticks.get_mut(&which).unwrap();
                             // if button_idx == 0 {
                             //     *lo_freq = 65535;
                             // } else if button_idx == 1 {
@@ -144,7 +142,7 @@ impl InputSystem {
                         }
                         Event::JoyButtonUp { button_idx, which, .. } => {
                             // println!("Button {} up", button_idx);
-                            let (joystick, (lo_freq, hi_freq)) = joysticks.get_mut(&which).unwrap();
+                            let (_joystick, (_lo_freq, _hi_freq)) = joysticks.get_mut(&which).unwrap();
                             // if button_idx == 0 {
                             //     *lo_freq = 65535;
                             // } else if button_idx == 1 {

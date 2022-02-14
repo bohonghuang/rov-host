@@ -13,9 +13,9 @@ use derivative::*;
 use crate::{AppModel, AppMsg, slave::video::{VideoEncoder, VideoDecoder, ImageFormat}};
 
 pub fn get_data_path() -> PathBuf {
-    const app_dir_name: &str = "rovhost";
+    const APP_DIR_NAME: &str = "rovhost";
     let mut data_path = dirs::data_local_dir().expect("无法找到本地数据文件夹");
-    data_path.push(app_dir_name);
+    data_path.push(APP_DIR_NAME);
     if !data_path.exists() {
         fs::create_dir(data_path.clone()).expect("无法创建应用数据文件夹");
     }
@@ -58,8 +58,7 @@ pub struct PreferencesModel {
     pub image_save_path: PathBuf,
     #[derivative(Default(value="ImageFormat::JPEG"))]
     pub image_save_format: ImageFormat,
-    #[derivative(Default(value="VideoEncoder::Copy"))]
-    pub video_encoder: VideoEncoder,
+    pub default_video_encoder: Option<VideoEncoder>,
     #[derivative(Default(value="Ipv4Addr::new(192, 168, 137, 219)"))]
     pub default_slave_ipv4_address: Ipv4Addr,
     #[derivative(Default(value="8888"))]
@@ -89,7 +88,7 @@ pub enum PreferencesMsg {
     SetVideoSavePath(PathBuf),
     SetImageSavePath(PathBuf),
     SetImageSaveFormat(ImageFormat),
-    SetVideoEncoder(VideoEncoder),
+    SetVideoEncoder(Option<VideoEncoder>),
     SetSlaveDefaultIpv4Address(Ipv4Addr),
     SetSlaveDefaultPort(u16),
     SetInitialSlaveNum(u8),
@@ -220,7 +219,7 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                         add_suffix: default_keep_video_display_ratio_switch = &Switch {
                             set_active: track!(model.changed(PreferencesModel::default_keep_video_display_ratio()), model.default_keep_video_display_ratio),
                             set_valign: Align::Center,
-                            connect_state_set(sender) => move |switch, state| {
+                            connect_state_set(sender) => move |_switch, state| {
                                 send!(sender, PreferencesMsg::SetDefaultKeepVideoDisplayRatio(state));
                                 Inhibit(false)
                             }
@@ -266,7 +265,7 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                         set_title: "图片保存目录",
                         set_subtitle: track!(model.changed(PreferencesModel::image_save_path()), model.image_save_path.to_str().unwrap()),
                         set_activatable: true,
-                        connect_activated[sender = sender.clone(), window = window.clone().downgrade()] => move |row| {
+                        connect_activated => move |_row| {
                             
                         }
                     },
@@ -293,7 +292,7 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                         set_title: "视频保存目录",
                         set_subtitle: track!(model.changed(PreferencesModel::video_save_path()), model.video_save_path.to_str().unwrap()),
                         set_activatable: true,
-                        connect_activated[sender = sender.clone(), window = window.clone().downgrade()] => move |row| {
+                        connect_activated => move |_row| {
                             
                         }
                     },
@@ -302,14 +301,15 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                         set_subtitle: "视频录制时使用的编码器",
                         set_model: Some(&{
                             let model = StringList::new(&[]);
+                            model.append("不编码");
                             for value in VideoEncoder::iter() {
                                 model.append(&value.to_string());
                             }
                             model
                         }),
-                        set_selected: track!(model.changed(PreferencesModel::video_encoder()), VideoEncoder::iter().position(|x| x == model.video_encoder).unwrap() as u32),
-                        connect_activated(sender) => move |row| {
-                            send!(sender, PreferencesMsg::SetVideoEncoder(VideoEncoder::iter().nth(row.selected() as usize).unwrap()))
+                        set_selected: track!(model.changed(PreferencesModel::default_video_encoder()), VideoEncoder::iter().position(|x| model.default_video_encoder.map_or_else(|| false, |y| y == x)).map_or_else(|| 0, |x| x + 1) as u32),
+                        connect_selected_notify(sender) => move |row| {
+                            send!(sender, PreferencesMsg::SetVideoEncoder(if row.selected() > 0 { Some(VideoEncoder::iter().nth(row.selected().wrapping_sub(1) as usize).unwrap()) } else { None }));
                         }
                     }
                 }
@@ -345,13 +345,14 @@ impl ComponentUpdate<AppModel> for PreferencesModel {
     fn update(
         &mut self,
         msg: PreferencesMsg,
-        components: &(),
-        sender: Sender<PreferencesMsg>,
+        _components: &(),
+        _sender: Sender<PreferencesMsg>,
         parent_sender: Sender<AppMsg>,
     ) {
+        self.reset();
         match msg {
             PreferencesMsg::SetVideoSavePath(path) => self.set_video_save_path(path),
-            PreferencesMsg::SetVideoEncoder(encoder) => self.set_video_encoder(encoder),
+            PreferencesMsg::SetVideoEncoder(encoder) => self.set_default_video_encoder(encoder),
             PreferencesMsg::SetSlaveDefaultIpv4Address(address) => self.set_default_slave_ipv4_address(address),
             PreferencesMsg::SetSlaveDefaultPort(port) => self.set_default_slave_port(port),
             PreferencesMsg::SetInitialSlaveNum(num) => self.set_initial_slave_num(num),
@@ -364,7 +365,6 @@ impl ComponentUpdate<AppModel> for PreferencesModel {
             PreferencesMsg::SetImageSaveFormat(format) => self.set_image_save_format(format),
             PreferencesMsg::SetParameterTunerGraphViewPointNumberLimit(limit) => self.set_param_tuner_graph_view_point_num_limit(limit),
         }
-        self.reset();
         send!(parent_sender, AppMsg::PreferencesUpdated(self.clone()));
     }
 }

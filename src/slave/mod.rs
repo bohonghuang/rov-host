@@ -10,7 +10,7 @@ use async_std::task;
 
 use glib::{PRIORITY_DEFAULT, Sender, WeakRef, DateTime, MainContext};
 use glib_macros::clone;
-use gtk::{prelude::*, Align, Box as GtkBox, Button, CenterBox, CheckButton, Frame, Grid, Image, Label, ListBox, MenuButton, Orientation, Overlay, Popover, Revealer, Switch, ToggleButton, Widget, Separator, PackType};
+use gtk::{prelude::*, Align, Box as GtkBox, Button, CenterBox, CheckButton, Frame, Grid, Image, Label, ListBox, MenuButton, Orientation, Overlay, Popover, Revealer, Switch, ToggleButton, Widget, Separator, PackType, Inhibit};
 use adw::{ApplicationWindow, ToastOverlay, Toast, Flap};
 use relm4::{WidgetPlus, factory::{FactoryPrototype, FactoryVec, positions::GridPosition}, send, MicroWidgets, MicroModel, MicroComponent};
 use relm4_macros::micro_widget;
@@ -94,7 +94,7 @@ impl FactoryPrototype for SlaveInfoModel {
         }
     }
 
-    fn position(&self, index: &usize) {
+    fn position(&self, _index: &usize) {
         
     }
 }
@@ -130,7 +130,7 @@ impl SlaveModel {
     pub fn new(config: SlaveConfigModel, preferences: Rc<RefCell<PreferencesModel>>, component_sender: &Sender<SlaveMsg>, input_event_sender: Sender<InputSourceEvent>) -> Self {
         Self {
             config: MyComponent::new(config, component_sender.clone()),
-            video: MyComponent::new(Default::default(), component_sender.clone()),
+            video: MyComponent::new(SlaveVideoModel::new(preferences.clone()), component_sender.clone()),
             preferences,
             input_event_sender,
             status: Arc::new(Mutex::new(HashMap::new())),
@@ -148,7 +148,7 @@ impl SlaveModel {
         *status.get(status_class).unwrap_or(&0)
     }
     pub fn set_target_status(&mut self, status_class: &SlaveStatusClass, new_status: i16) {
-        let mut status = self.status.lock().unwrap();
+        let mut status = self.get_mut_status().lock().unwrap();
         *status.entry(status_class.clone()).or_insert(0) = new_status;
     }
 }
@@ -208,7 +208,7 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                             set_sensitive: track!(model.changed(SlaveModel::connected()), model.connected != None),
                             set_css_classes?: watch!(model.connected.map(|x| if x { vec!["circular", "suggested-action"] } else { vec!["circular"] }).as_ref()),
                             set_tooltip_text: track!(model.changed(SlaveModel::connected()), model.connected.map(|x| if x { "断开连接" } else { "连接" })),
-                            connect_clicked(sender) => move |button| {
+                            connect_clicked(sender) => move |_button| {
                                 send!(sender, SlaveMsg::ToggleConnect);
                             },
                         },
@@ -217,16 +217,17 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                             set_sensitive: track!(model.changed(SlaveModel::sync_recording()) || model.changed(SlaveModel::polling()), model.polling != None && !model.sync_recording),
                             set_css_classes?: watch!(model.polling.map(|x| if x { vec!["circular", "destructive-action"] } else { vec!["circular"] }).as_ref()),
                             set_tooltip_text: track!(model.changed(SlaveModel::polling()), model.polling.map(|x| if x { "停止拉流" } else { "启动拉流" })),
-                            connect_clicked(sender) => move |button| {
+                            connect_clicked(sender) => move |_button| {
                                 send!(sender, SlaveMsg::TogglePolling);
                             },
                         },
+                        append = &Separator {},
                         append = &Button {
                             set_icon_name: "camera-photo-symbolic",
                             set_sensitive: watch!(model.video.model().get_pixbuf().is_some()),
                             set_css_classes: &["circular"],
                             set_tooltip_text: Some("画面截图"),
-                            connect_clicked(sender) => move |button| {
+                            connect_clicked(sender) => move |_button| {
                                 send!(sender, SlaveMsg::TakeScreenshot);
                             },
                         },
@@ -235,7 +236,7 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                             set_sensitive: track!(model.changed(SlaveModel::sync_recording()) || model.changed(SlaveModel::polling()) || model.changed(SlaveModel::recording()), !model.sync_recording && model.recording != None &&  model.polling == Some(true)),
                             set_css_classes?: watch!(model.recording.map(|x| if x { vec!["circular", "destructive-action"] } else { vec!["circular"] }).as_ref()),
                             set_tooltip_text: track!(model.changed(SlaveModel::recording()), model.polling.map(|x| if x { "停止录制" } else { "开始录制" })),
-                            connect_clicked(sender) => move |button| {
+                            connect_clicked(sender) => move |_button| {
                                 send!(sender, SlaveMsg::ToggleRecord);
                             },
                         },
@@ -265,7 +266,7 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                                             set_icon_name: "view-refresh-symbolic",
                                             set_css_classes: &["circular"],
                                             set_tooltip_text: Some("刷新输入设备"),
-                                            connect_clicked(sender) => move |button| {
+                                            connect_clicked(sender) => move |_button| {
                                                 send!(sender, SlaveMsg::UpdateInputSources);
                                             },
                                         },
@@ -287,7 +288,7 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                             set_icon_name: "software-update-available-symbolic",
                             set_css_classes: &["circular"],
                             set_tooltip_text: Some("固件更新"),
-                            connect_clicked(sender) => move |button| {
+                            connect_clicked(sender) => move |_button| {
                                 send!(sender, SlaveMsg::OpenFirmwareUpater);
                             },
                         },
@@ -295,10 +296,11 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                             set_icon_name: "preferences-other-symbolic",
                             set_css_classes: &["circular"],
                             set_tooltip_text: Some("参数调校"),
-                            connect_clicked(sender) => move |button| {
+                            connect_clicked(sender) => move |_button| {
                                 send!(sender, SlaveMsg::OpenParameterTuner);
                             },
                         },
+                        append = &Separator {},
                         append = &ToggleButton {
                             set_icon_name: "emblem-system-symbolic",
                             set_css_classes: &["circular"],
@@ -313,7 +315,7 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                             set_css_classes: &["circular"],
                             set_tooltip_text: Some("移除机位"),
                             set_visible: false,
-                            connect_active_notify(sender) => move |button| {
+                            connect_active_notify(sender) => move |_button| {
                                 send!(sender, SlaveMsg::DestroySlave);
                             },
                         },
@@ -350,7 +352,7 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                                                 set_icon_name: watch!(Some(if model.slave_info_displayed { "go-down-symbolic" } else { "go-next-symbolic" })),
                                             },
                                         },
-                                        connect_clicked(sender) => move |button| {
+                                        connect_clicked(sender) => move |_button| {
                                             send!(sender, SlaveMsg::ToggleDisplayInfo);
                                         },
                                     },
@@ -361,44 +363,60 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                                             set_margin_all: 5,
                                             set_orientation: Orientation::Vertical,
                                             set_halign: Align::Center,
-                                            append = &Frame {
+                                            append = &GtkBox {
                                                 set_hexpand: true,
                                                 set_halign: Align::Center,
-                                                set_child = Some(&Grid) {
+                                                append = &Grid {
                                                     set_margin_all: 2,
                                                     set_row_spacing: 2,
                                                     set_column_spacing: 2,
                                                     attach(0, 0, 1, 1) = &ToggleButton {
                                                         set_icon_name: "object-rotate-left-symbolic",
-                                                        set_active: watch!(model.get_target_status(&SlaveStatusClass::MotionRotate) < -JOYSTICK_DISPLAY_THRESHOLD),
+                                                        set_can_focus: false,
+                                                        set_can_target: false,
+                                                        set_active: track!(model.changed(SlaveModel::status()), model.get_target_status(&SlaveStatusClass::MotionRotate) < -JOYSTICK_DISPLAY_THRESHOLD),
                                                     },
                                                     attach(2, 0, 1, 1) = &ToggleButton {
                                                         set_icon_name: "object-rotate-right-symbolic",
-                                                        set_active: watch!(model.get_target_status(&SlaveStatusClass::MotionRotate) > JOYSTICK_DISPLAY_THRESHOLD),
+                                                        set_can_focus: false,
+                                                        set_can_target: false,
+                                                        set_active: track!(model.changed(SlaveModel::status()), model.get_target_status(&SlaveStatusClass::MotionRotate) > JOYSTICK_DISPLAY_THRESHOLD),
                                                     },
                                                     attach(0, 2, 1, 1) = &ToggleButton {
                                                         set_icon_name: "go-bottom-symbolic",
-                                                        set_active: watch!(model.get_target_status(&SlaveStatusClass::MotionZ) < -JOYSTICK_DISPLAY_THRESHOLD),
+                                                        set_can_focus: false,
+                                                        set_can_target: false,
+                                                        set_active: track!(model.changed(SlaveModel::status()), model.get_target_status(&SlaveStatusClass::MotionZ) < -JOYSTICK_DISPLAY_THRESHOLD),
                                                     },
                                                     attach(2, 2, 1, 1) = &ToggleButton {
                                                         set_icon_name: "go-top-symbolic",
-                                                        set_active: watch!(model.get_target_status(&SlaveStatusClass::MotionZ) > JOYSTICK_DISPLAY_THRESHOLD),
+                                                        set_can_focus: false,
+                                                        set_can_target: false,
+                                                        set_active: track!(model.changed(SlaveModel::status()), model.get_target_status(&SlaveStatusClass::MotionZ) > JOYSTICK_DISPLAY_THRESHOLD),
                                                     },
                                                     attach(1, 0, 1, 1) = &ToggleButton {
                                                         set_icon_name: "go-up-symbolic",
-                                                        set_active: watch!(model.get_target_status(&SlaveStatusClass::MotionY) > JOYSTICK_DISPLAY_THRESHOLD),
+                                                        set_can_focus: false,
+                                                        set_can_target: false,
+                                                        set_active: track!(model.changed(SlaveModel::status()), model.get_target_status(&SlaveStatusClass::MotionY) > JOYSTICK_DISPLAY_THRESHOLD),
                                                     },
                                                     attach(0, 1, 1, 1) = &ToggleButton {
                                                         set_icon_name: "go-previous-symbolic",
-                                                        set_active: watch!(model.get_target_status(&SlaveStatusClass::MotionX) < -JOYSTICK_DISPLAY_THRESHOLD),
+                                                        set_can_focus: false,
+                                                        set_can_target: false,
+                                                        set_active: track!(model.changed(SlaveModel::status()), model.get_target_status(&SlaveStatusClass::MotionX) < -JOYSTICK_DISPLAY_THRESHOLD),
                                                     },
                                                     attach(2, 1, 1, 1) = &ToggleButton {
                                                         set_icon_name: "go-next-symbolic",
-                                                        set_active: watch!(model.get_target_status(&SlaveStatusClass::MotionX) > JOYSTICK_DISPLAY_THRESHOLD),
+                                                        set_can_focus: false,
+                                                        set_can_target: false,
+                                                        set_active: track!(model.changed(SlaveModel::status()), model.get_target_status(&SlaveStatusClass::MotionX) > JOYSTICK_DISPLAY_THRESHOLD),
                                                     },
                                                     attach(1, 2, 1, 1) = &ToggleButton {
                                                         set_icon_name: "go-down-symbolic",
-                                                        set_active: watch!(model.get_target_status(&SlaveStatusClass::MotionY) < -JOYSTICK_DISPLAY_THRESHOLD),
+                                                        set_can_focus: false,
+                                                        set_can_target: false,
+                                                        set_active: track!(model.changed(SlaveModel::status()), model.get_target_status(&SlaveStatusClass::MotionY) < -JOYSTICK_DISPLAY_THRESHOLD),
                                                     },
                                                 },
                                             },
@@ -414,7 +432,11 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                                                     set_text: "深度锁定",
                                                 },
                                                 set_end_widget = Some(&Switch) {
-                                                    set_active: watch!(model.get_target_status(&SlaveStatusClass::DepthLocked) != 0),
+                                                    set_active: track!(model.changed(SlaveModel::status()), model.get_target_status(&SlaveStatusClass::DepthLocked) != 0),
+                                                    connect_state_set(sender) => move |_switch, state| {
+                                                        send!(sender, SlaveMsg::SetSlaveStatus(SlaveStatusClass::DepthLocked, if state { 1 } else { 0 }));
+                                                        Inhibit(false)
+                                                    },
                                                 },
                                             },
                                             append = &CenterBox {
@@ -423,7 +445,11 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                                                     set_text: "方向锁定",
                                                 },
                                                 set_end_widget = Some(&Switch) {
-                                                    set_active: watch!(model.get_target_status(&SlaveStatusClass::DirectionLocked) != 0),
+                                                    set_active: track!(model.changed(SlaveModel::status()), model.get_target_status(&SlaveStatusClass::DirectionLocked) != 0),
+                                                    connect_state_set(sender) => move |_switch, state| {
+                                                        send!(sender, SlaveMsg::SetSlaveStatus(SlaveStatusClass::DirectionLocked, if state { 1 } else { 0 }));
+                                                        Inhibit(false)
+                                                    },
                                                 },
                                             },
                                         },
@@ -456,13 +482,14 @@ pub enum SlaveMsg {
     RecordingChanged(bool),
     TakeScreenshot,
     SetInputSource(Option<InputSource>),
+    SetSlaveStatus(SlaveStatusClass, i16),
     UpdateInputSources,
     ToggleDisplayInfo,
     InputReceived(InputSourceEvent),
     OpenFirmwareUpater,
     OpenParameterTuner,
     DestroySlave,
-    VideoPipelineError(String),
+    ErrorMessage(String),
     TcpError(String),
     TcpConnectionChanged(Option<async_std::sync::Arc<TcpStream>>),
     ShowToastMessage(String),
@@ -586,7 +613,6 @@ async fn tcp_main_handler(input_rate: u16,
                         }
                     },
                     SlaveTcpMsg::ControlUpdated(control) => {
-                        dbg!(&control);
                         *control_packet.lock().await = Some(control);
                         *last_action_timestamp.lock().await = current_millis();
                     },
@@ -610,10 +636,11 @@ impl MicroModel for SlaveModel {
     type Widgets = SlaveWidgets;
     type Data = (Sender<AppMsg>, WeakRef<ApplicationWindow>);
     fn update(&mut self, msg: SlaveMsg, (parent_sender, window): &Self::Data, sender: Sender<SlaveMsg>) {
+        self.reset();
         match msg {
             SlaveMsg::ConfigUpdated => {
                 let config = self.get_mut_config().model().clone();
-                self.video.send(SlaveVideoMsg::ConfigUpdated(config));
+                send!(self.video.sender(), SlaveVideoMsg::ConfigUpdated(config));
             },
             SlaveMsg::ToggleConnect => {
                 match self.get_connected() {
@@ -629,7 +656,7 @@ impl MicroModel for SlaveModel {
                         self.set_connected(None);
                         self.config.send(SlaveConfigMsg::SetConnected(None)).unwrap();
                         let (tcp_sender, tcp_receiver) = async_std::channel::bounded::<SlaveTcpMsg>(128);
-                        self.tcp_msg_sender = Some(tcp_sender.clone());
+                        self.set_tcp_msg_sender(Some(tcp_sender.clone()));
                         let sender = sender.clone();
                         let control_sending_rate = *self.preferences.borrow().get_default_input_sending_rate();
                         let ip = *self.config.model().get_ip();
@@ -665,7 +692,7 @@ impl MicroModel for SlaveModel {
                 self.set_input_source(source);
             },
             SlaveMsg::UpdateInputSources => {
-                self.set_input_system(self.get_input_system().clone());
+                self.get_mut_input_system();
             },
             SlaveMsg::ToggleDisplayInfo => {
                 self.set_slave_info_displayed(!*self.get_slave_info_displayed());
@@ -686,15 +713,14 @@ impl MicroModel for SlaveModel {
                     },
                 }
                 if let Some(sender) = self.get_tcp_msg_sender() {
-                    match sender.try_send(SlaveTcpMsg::ControlUpdated(ControlPacket::from_status_map(&self.status.lock().unwrap()))) {
+                    match sender.try_send(SlaveTcpMsg::ControlUpdated(ControlPacket::from_status_map(&self.get_status().lock().unwrap()))) {
                         Ok(_) => (),
                         Err(err) => println!("Cannot send control input: {}", err.to_string()),
                     }
                 }
-                self.set_status(self.get_status().clone());
             },
             SlaveMsg::OpenFirmwareUpater => {
-                match &self.tcp_stream {
+                match self.get_tcp_stream() {
                     Some(tcp_stream) => {
                         let component = MicroComponent::new(SlaveFirmwareUpdaterModel::new(Deref::deref(tcp_stream).clone()), sender.clone());
                         component.root_widget().set_transient_for(Some(&window.upgrade().unwrap()));
@@ -705,7 +731,7 @@ impl MicroModel for SlaveModel {
                 }
             },
             SlaveMsg::OpenParameterTuner => {
-                match &self.tcp_stream {
+                match self.get_tcp_stream() {
                     Some(tcp_stream) => {
                         let component = MicroComponent::new(SlaveParameterTunerModel::new(*self.preferences.borrow().get_param_tuner_graph_view_point_num_limit()), sender.clone());
                         component.root_widget().set_transient_for(Some(&window.upgrade().unwrap()));
@@ -730,10 +756,8 @@ impl MicroModel for SlaveModel {
                     _ => (),
                 }
             },
-            SlaveMsg::VideoPipelineError(msg) => {
+            SlaveMsg::ErrorMessage(msg) => {
                 error_message("错误", &msg, window.upgrade().as_ref());
-                self.set_polling(Some(false));
-                self.config.send(SlaveConfigMsg::SetPolling(Some(false))).unwrap();
             },
             SlaveMsg::TcpError(msg) => {
                 send!(sender, SlaveMsg::ShowToastMessage(format!("下位机通讯错误：{}", msg)));
@@ -752,7 +776,7 @@ impl MicroModel for SlaveModel {
             },
 	    SlaveMsg::ToggleRecord => {
                 let video = &self.video;
-                if video.model().record_handle.is_none() {
+                if video.model().get_record_handle().is_none() {
                     let mut pathbuf = self.preferences.borrow().get_video_save_path().clone();
                     pathbuf.push(format!("{}.mkv", DateTime::now_local().unwrap().format_iso8601().unwrap().replace(":", "-")));
                     send!(video.sender(), SlaveVideoMsg::StartRecord(pathbuf));
@@ -768,7 +792,7 @@ impl MicroModel for SlaveModel {
             },
             SlaveMsg::RecordingChanged(recording) => {
                 if recording {
-                    if self.recording == Some(false) {
+                    if *self.get_recording() == Some(false) {
                         self.set_sync_recording(true);
                     }
                 } else {
@@ -778,12 +802,12 @@ impl MicroModel for SlaveModel {
             },
             SlaveMsg::TakeScreenshot => {
                 let mut pathbuf = self.preferences.borrow().get_image_save_path().clone();
-                let mut format = self.preferences.borrow().get_image_save_format().clone();
+                let format = self.preferences.borrow().get_image_save_format().clone();
                 pathbuf.push(format!("{}.{}", DateTime::now_local().unwrap().format_iso8601().unwrap().replace(":", "-"), format.extension()));
                 send!(self.video.sender(), SlaveVideoMsg::SaveScreenshot(pathbuf));
             },
             SlaveMsg::TcpMessage(msg) => {
-                self.tcp_msg_sender.as_ref().unwrap().try_send(msg).unwrap();
+                self.get_tcp_msg_sender().as_ref().unwrap().try_send(msg).unwrap();
             },
             SlaveMsg::InformationsReceived(info_map) => {
                 let infos = self.get_mut_infos();
@@ -793,6 +817,15 @@ impl MicroModel for SlaveModel {
                 }
             },
             SlaveMsg::SetConfigPresented(presented) => self.set_config_presented(presented),
+            SlaveMsg::SetSlaveStatus(which, value) => {
+                self.set_target_status(&which, value);
+                if let Some(sender) = self.get_tcp_msg_sender() {
+                    match sender.try_send(SlaveTcpMsg::ControlUpdated(ControlPacket::from_status_map(&self.get_status().lock().unwrap()))) {
+                        Ok(_) => (),
+                        Err(err) => println!("Cannot send updated status: {}", err.to_string()),
+                    }
+                }
+            },
         }
     }
 }
@@ -810,9 +843,11 @@ Model: MicroModel + 'static,  {
     fn model(&self) -> std::cell::Ref<'_, Model> {
         self.component.model().unwrap()
     }
+    #[allow(dead_code)]
     fn model_mut(&self) -> std::cell::RefMut<'_, Model> {
         self.component.model_mut().unwrap()
     }
+    #[allow(dead_code)]
     fn widgets(&self) -> std::cell::RefMut<'_, Model::Widgets> {
         self.component.widgets().unwrap()
     }
@@ -863,8 +898,8 @@ impl FactoryPrototype for MyComponent<SlaveModel> {
 
     fn init_view(
         &self,
-        index: &usize,
-        sender: Sender<AppMsg>,
+        _index: &usize,
+        _sender: Sender<AppMsg>,
     ) -> ToastOverlay {
         self.component.root_widget().clone()
     }
@@ -886,8 +921,8 @@ impl FactoryPrototype for MyComponent<SlaveModel> {
 
     fn view(
         &self,
-        index: &usize,
-        widgets: &ToastOverlay,
+        _index: &usize,
+        _widgets: &ToastOverlay,
     ) {
         self.component.update_view().unwrap();
     }

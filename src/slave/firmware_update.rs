@@ -73,6 +73,7 @@ impl MicroModel for SlaveFirmwareUpdaterModel {
     type Data = Sender<SlaveMsg>;
     
     fn update(&mut self, msg: SlaveFirmwareUpdaterMsg, parent_sender: &Sender<SlaveMsg>, sender: Sender<SlaveFirmwareUpdaterMsg>) {
+        self.reset();
         match msg {
             SlaveFirmwareUpdaterMsg::NextStep => self.set_current_page(self.get_current_page().wrapping_add(1)),
             SlaveFirmwareUpdaterMsg::FirmwareFileSelected(path) => self.set_firmware_file_path(Some(path)),
@@ -165,7 +166,7 @@ impl MicroWidgets<SlaveFirmwareUpdaterModel> for SlaveFirmwareUpdaterWidgets {
                             set_css_classes: &["suggested-action", "pill"],
                             set_halign: Align::Center,
                             set_label: "下一步",
-                            connect_clicked(sender) => move |button| {
+                            connect_clicked(sender) => move |_button| {
                                 send!(sender, SlaveFirmwareUpdaterMsg::NextStep);
                             },
                         },
@@ -186,7 +187,7 @@ impl MicroWidgets<SlaveFirmwareUpdaterModel> for SlaveFirmwareUpdaterWidgets {
                                     add_suffix: browse_firmware_file_button = &Button {
                                         set_label: "浏览",
                                         set_valign: Align::Center,
-                                        connect_clicked(sender, window) => move |button| {
+                                        connect_clicked(sender, window) => move |_button| {
                                             let filter = FileFilter::new();
                                             filter.add_suffix("bin");
                                             filter.set_name(Some("固件文件"));
@@ -208,7 +209,7 @@ impl MicroWidgets<SlaveFirmwareUpdaterModel> for SlaveFirmwareUpdaterWidgets {
                                 set_halign: Align::Center,
                                 set_label: "开始更新",
                                 set_sensitive: track!(model.changed(SlaveFirmwareUpdaterModel::firmware_file_path()), model.get_firmware_file_path().as_ref().map_or(false, |pathbuf| pathbuf.exists() && pathbuf.is_file())),
-                                connect_clicked(sender) => move |button| {
+                                connect_clicked(sender) => move |_button| {
                                     send!(sender, SlaveFirmwareUpdaterMsg::StartUpload);
                                 },
                             }
@@ -238,7 +239,7 @@ impl MicroWidgets<SlaveFirmwareUpdaterModel> for SlaveFirmwareUpdaterWidgets {
                             set_css_classes: &["suggested-action", "pill"],
                             set_halign: Align::Center,
                             set_label: "完成",
-                            connect_clicked(window) => move |button| {
+                            connect_clicked(window) => move |_button| {
                                 window.destroy();
                             },
                         },

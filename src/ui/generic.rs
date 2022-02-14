@@ -45,7 +45,7 @@ pub fn error_message<T>(title: &str, msg: &str, window: Option<&T>) -> MessageDi
             set_modal: true,
             set_transient_for: window,
             add_button: args!("确定", ResponseType::Ok),
-            connect_response => |dialog, response| {
+            connect_response => |dialog, _response| {
                 dialog.destroy();
             }
         }
