@@ -92,6 +92,7 @@ impl MicroModel for SlaveVideoModel {
                         },
                         Err(err) => {
                             send!(parent_sender, SlaveMsg::ErrorMessage(err.to_string()));
+                            send!(parent_sender, SlaveMsg::RecordingChanged(false));
                         },
                     }
                 }
