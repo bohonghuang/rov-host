@@ -4,7 +4,7 @@ pub mod slave_config;
 pub mod slave_video;
 pub mod firmware_update;
 
-use std::{cell::RefCell, collections::{HashMap, VecDeque}, rc::Rc, sync::{Arc, Mutex}, fmt::Debug, time::{Duration, SystemTime}, ops::Deref};
+use std::{cell::RefCell, collections::{HashMap, VecDeque}, rc::Rc, sync::{Arc, Mutex}, fmt::Debug, time::{Duration, SystemTime}, ops::Deref, io::Error as IOError};
 use async_std::{net::TcpStream, prelude::*, task::{JoinHandle, self}};
 
 use glib::{PRIORITY_DEFAULT, Sender, WeakRef, DateTime, MainContext};
@@ -498,17 +498,18 @@ pub enum SlaveMsg {
 }
 
 pub enum SlaveTcpMsg {
+    ConnectionLost(IOError),
     Disconnect,
     SendString(String),
     ControlUpdated(ControlPacket),
-    Block(JoinHandle<()>),
+    Block(JoinHandle<Result<(), IOError>>),
 }
 
 async fn tcp_main_handler(input_rate: u16,
                           tcp_stream: Arc<TcpStream>,
                           tcp_sender: async_std::channel::Sender<SlaveTcpMsg>,
                           tcp_receiver: async_std::channel::Receiver<SlaveTcpMsg>,
-                          slave_sender: Sender<SlaveMsg>) {
+                          slave_sender: Sender<SlaveMsg>) -> Result<(), IOError> {
     fn current_millis() -> u128 {
         SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis()
     }
@@ -530,14 +531,14 @@ async fn tcp_main_handler(input_rate: u16,
             }
             if *idle.lock().await {
                 if current_millis() - *last_action_timestamp.lock().await >= IDLE_TIME_MILLIS {
-                    if tcp_stream.write_all("{}".as_bytes()).await.is_err() {
+                    if let Err(err) = tcp_stream.write_all("{}".as_bytes()).await {
+                        tcp_sender.send(SlaveTcpMsg::ConnectionLost(err)).await.unwrap_or_default();
                         break;
                     }
                 }
             }
             task::sleep(Duration::from_millis(500)).await;
         }
-        tcp_sender.send(SlaveTcpMsg::Disconnect).await.unwrap();
     }));
 
     let receive_task = task::spawn(clone!(@strong tcp_sender, @strong idle, @strong slave_sender, @strong tcp_stream => async move {
@@ -546,25 +547,28 @@ async fn tcp_main_handler(input_rate: u16,
         loop {
             if *idle.lock().await {
                 buf.fill(0);
-                match tcp_stream.read(&mut buf).await {
-                    Ok(_) => {
-                        let json_string = match std::str::from_utf8(buf.split(|x| x.eq(&0)).next().unwrap()) {
-                            Ok(string) => string,
-                            Err(_) => continue,
-                        };
-                        let msg = serde_json::from_str::<SlaveInfoPacket>(&json_string);
-                        match msg {
-                            Ok(packet) => {
-                                send!(slave_sender, SlaveMsg::InformationsReceived(packet.info));
-                            },
-                            Err(err) => eprintln!("无法识别来自于下位机的JSON数据包（{}）：“{}”", err.to_string(), json_string),
-                        }
-                    },
-                    Err(_) => break,
-                };
+                if let Err(err) = tcp_stream.read(&mut buf).await {
+                    tcp_sender.send(SlaveTcpMsg::ConnectionLost(err)).await.unwrap_or_default();
+                    break;
+                } else {
+                    let json_string = match std::str::from_utf8(buf.split(|x| x.eq(&0)).next().unwrap()) {
+                        Ok(string) => string,
+                        Err(_) => continue,
+                    };
+                    if json_string.is_empty() {
+                        tcp_sender.send(SlaveTcpMsg::ConnectionLost(IOError::new(std::io::ErrorKind::InvalidData, "下位机主动断开连接"))).await.unwrap_or_default();
+                        break;
+                    }
+                    let msg = serde_json::from_str::<SlaveInfoPacket>(&json_string);
+                    match msg {
+                        Ok(packet) => {
+                            send!(slave_sender, SlaveMsg::InformationsReceived(packet.info));
+                        },
+                        Err(err) => eprintln!("无法识别来自于下位机的JSON数据包（{}）：“{}”", err.to_string(), json_string),
+                    }
+                }
             }
         }
-        tcp_sender.send(SlaveTcpMsg::Disconnect).await.unwrap();
     }));
     
     let control_send_task = task::spawn(clone!(@strong idle, @strong tcp_sender, @strong tcp_stream, @strong control_packet => async move {
@@ -576,16 +580,17 @@ async fn tcp_main_handler(input_rate: u16,
             if *idle.lock().await {
                 let mut control_mutex = control_packet.lock().await;
                 if let Some(control) = control_mutex.as_ref() {
-                    if tcp_stream.write_all(control.to_string().as_bytes()).await.is_ok() {
-                        *control_mutex = None;
-                    } else {
-                        break;
+                    match tcp_stream.write_all(control.to_string().as_bytes()).await {
+                        Ok(_) => *control_mutex = None,
+                        Err(err) => {
+                            tcp_sender.send(SlaveTcpMsg::ConnectionLost(err)).await.unwrap_or_default();
+                            break;
+                        }
                     }
                 }
             }
             task::sleep(Duration::from_millis(1000 / input_rate as u64)).await;
         }
-        tcp_sender.send(SlaveTcpMsg::Disconnect).await.unwrap();
     }));
     
     loop {
@@ -598,18 +603,22 @@ async fn tcp_main_handler(input_rate: u16,
                             control_send_task.cancel().await;
                             receive_task.cancel().await;
                             send!(slave_sender, SlaveMsg::TcpConnectionChanged(None));
-                        } else {
-                            send!(slave_sender, SlaveMsg::TcpError("连接意外终止".to_string()));
                         }
+                        tcp_receiver.close();
                         break;
                     },
+                    SlaveTcpMsg::ConnectionLost(err) => {
+                        tcp_stream.shutdown(std::net::Shutdown::Both).unwrap_or_default();
+                        connection_test_task.cancel().await;
+                        control_send_task.cancel().await;
+                        receive_task.cancel().await;
+                        send!(slave_sender, SlaveMsg::TcpError(err.to_string()));
+                        tcp_receiver.close();
+                        return Err(err);
+                    }
                     SlaveTcpMsg::SendString(string) => {
-                        if tcp_stream.write_all(string.as_bytes()).await.is_ok() {
-                            *last_action_timestamp.lock().await = current_millis();
-                        } else {
-                            tcp_stream.shutdown(std::net::Shutdown::Both).unwrap();
-                            break;
-                        }
+                        tcp_stream.write_all(string.as_bytes()).await?;
+                        *last_action_timestamp.lock().await = current_millis();
                     },
                     SlaveTcpMsg::ControlUpdated(control) => {
                         *control_packet.lock().await = Some(control);
@@ -618,7 +627,9 @@ async fn tcp_main_handler(input_rate: u16,
                     SlaveTcpMsg::Block(blocker) => {
                         *idle.lock().await = false;
                         task::spawn(clone!(@strong idle => async move {
-                            blocker.await;
+                            if let Err(err) = blocker.await {
+                                eprintln!("模块异常退出：{}", err);
+                            }
                             *idle.lock().await = true;
                         }));
                     },
@@ -627,7 +638,7 @@ async fn tcp_main_handler(input_rate: u16,
             _ => (),
         }
     }
-    tcp_receiver.close();
+    Ok(())
 }
 
 impl MicroModel for SlaveModel {
@@ -663,7 +674,7 @@ impl MicroModel for SlaveModel {
                         async_std::task::spawn(async move {
                             match TcpStream::connect(format!("{}:{}", ip, port)).await.map(|x| async_std::sync::Arc::new(x)) {
                                 Ok(tcp_stream) => {
-                                    tcp_main_handler(control_sending_rate, tcp_stream.clone(), tcp_sender, tcp_receiver, sender.clone()).await;
+                                    tcp_main_handler(control_sending_rate, tcp_stream.clone(), tcp_sender, tcp_receiver, sender.clone()).await.unwrap_or_default();
                                 },
                                 Err(err) => send!(sender, SlaveMsg::TcpError(err.to_string())),
                             }
@@ -806,7 +817,9 @@ impl MicroModel for SlaveModel {
                 send!(self.video.sender(), SlaveVideoMsg::SaveScreenshot(pathbuf));
             },
             SlaveMsg::TcpMessage(msg) => {
-                self.get_tcp_msg_sender().as_ref().unwrap().try_send(msg).unwrap();
+                if let Some(sender) = self.get_tcp_msg_sender().as_ref() {
+                    sender.try_send(msg).unwrap_or_default();
+                }
             },
             SlaveMsg::InformationsReceived(info_map) => {
                 let infos = self.get_mut_infos();

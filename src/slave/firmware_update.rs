@@ -74,7 +74,7 @@ impl MicroModel for SlaveFirmwareUpdaterModel {
             SlaveFirmwareUpdaterMsg::FirmwareFileSelected(path) => self.set_firmware_file_path(Some(path)),
             SlaveFirmwareUpdaterMsg::FirmwareUploadProgressUpdated(progress) => {
                 self.set_firmware_uploading_progress(progress);
-                if progress >= 1.0 {
+                if progress >= 1.0 || progress < 0.0 {
                     send!(sender, SlaveFirmwareUpdaterMsg::NextStep);
                 }
             },
@@ -82,11 +82,11 @@ impl MicroModel for SlaveFirmwareUpdaterModel {
                 if let Some(path) = self.get_firmware_file_path() {
                     send!(sender, SlaveFirmwareUpdaterMsg::NextStep);
                     let mut tcp_stream = self.get_tcp_stream().clone();
-                    let handle = task::spawn(clone!(@strong path => async move {
+                    let handle = task::spawn(clone!(@strong sender, @strong path => async move {
                         match async_std::fs::File::open(path).await {
                             Ok(mut file) => {
                                 let mut bytes = Vec::new();
-                                file.read_to_end(&mut bytes).await.unwrap();
+                                file.read_to_end(&mut bytes).await?;
                                 let bytes = bytes.as_slice();
                                 let md5_string = format!("{:x}", md5::compute(&bytes));
                                 let packet = SlaveFirmwareUpdatePacket {
@@ -98,36 +98,35 @@ impl MicroModel for SlaveFirmwareUpdaterModel {
                                 };
                                 let json = serde_json::to_string(&packet).unwrap();
                                 let mut json_bytes = json.as_bytes();
-                                if async_std::io::copy(&mut json_bytes, &mut tcp_stream).await.is_err() {
-                                    send!(sender, SlaveFirmwareUpdaterMsg::FirmwareUploadFailed);
-                                    return
-                                }
+                                async_std::io::copy(&mut json_bytes, &mut tcp_stream).await?;
                                 let chunks = bytes.chunks(1024);
                                 let chunk_num = chunks.len();
                                 if chunk_num > 0 {
                                     for (chunk_index, chunk) in chunks.enumerate() {
-                                        if tcp_stream.write(chunk).await.is_err() {
-                                            send!(sender, SlaveFirmwareUpdaterMsg::FirmwareUploadFailed);
-                                            return
-                                        }
+                                        tcp_stream.write(chunk).await?;
                                         let progress = (chunk_index + 1) as f32 / chunk_num as f32;
                                         send!(sender, SlaveFirmwareUpdaterMsg::FirmwareUploadProgressUpdated(progress));
                                     }
-                                    if tcp_stream.flush().await.is_err() {
-                                        send!(sender, SlaveFirmwareUpdaterMsg::FirmwareUploadFailed);
-                                        return
-                                    }
+                                    tcp_stream.flush().await?;
                                 } else {
                                     send!(sender, SlaveFirmwareUpdaterMsg::FirmwareUploadProgressUpdated(1.0));
                                 }
+                                Ok(())
                             },
-                            Err(_) => return,
+                            Err(err) => Err(err),
                         }
                     }));
+                    let handle = task::spawn(async move {
+                        let result = handle.await;
+                        if result.is_err() {
+                            send!(sender, SlaveFirmwareUpdaterMsg::FirmwareUploadFailed);
+                        }
+                        result
+                    });
                     send!(parent_sender, SlaveMsg::TcpMessage(SlaveTcpMsg::Block(handle)));
                 }
             },
-            SlaveFirmwareUpdaterMsg::FirmwareUploadFailed => eprintln!("固件上传失败！"),
+            SlaveFirmwareUpdaterMsg::FirmwareUploadFailed => send!(sender, SlaveFirmwareUpdaterMsg::FirmwareUploadProgressUpdated(-1.0)),
         }
     }
 }
@@ -167,7 +166,7 @@ impl MicroWidgets<SlaveFirmwareUpdaterModel> for SlaveFirmwareUpdaterWidgets {
                         },
                     },
                     append = &StatusPage {
-                        set_icon_name: Some("system-file-manager-symbolic"),
+                        set_icon_name: Some("folder-open-symbolic"),
                         set_title: "请选择固件文件",
                         set_hexpand: true,
                         set_vexpand: true,
@@ -225,11 +224,11 @@ impl MicroWidgets<SlaveFirmwareUpdaterModel> for SlaveFirmwareUpdaterWidgets {
                         },
                     },
                     append = &StatusPage {
-                        set_icon_name: Some("emblem-ok-symbolic"),
-                        set_title: "固件更新完成",
+                        set_icon_name: track!(model.changed(SlaveFirmwareUpdaterModel::firmware_uploading_progress()), if *model.get_firmware_uploading_progress() >= 0.0 { Some("emblem-ok-symbolic") } else { Some("dialog-warning-symbolic") }),
+                        set_title: track!(model.changed(SlaveFirmwareUpdaterModel::firmware_uploading_progress()), if *model.get_firmware_uploading_progress() >= 0.0 { "固件更新成功" } else { "固件更新失败" }),
                         set_hexpand: true,
                         set_vexpand: true,
-                        set_description: Some("机器人将自动重启，请稍后手动进行连接。"),
+                        set_description: track!(model.changed(SlaveFirmwareUpdaterModel::firmware_uploading_progress()), Some(if *model.get_firmware_uploading_progress() >= 0.0 { "机器人将自动重启，请稍后手动进行连接。" } else { "请检查网络连接。" })),
                         set_child = Some(&Button) {
                             set_css_classes: &["suggested-action", "pill"],
                             set_halign: Align::Center,

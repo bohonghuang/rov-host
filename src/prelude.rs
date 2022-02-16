@@ -1,5 +1,6 @@
 use glib::{ObjectExt as GlibObjectExt, ObjectType};
 use adw::Carousel;
+use gtk::{prelude::*, Window};
 
 pub trait ObjectExt {
     fn put_data<QD: 'static>(&self, key: &str, value: QD);
@@ -26,5 +27,17 @@ pub trait CarouselExt {
 impl CarouselExt for Carousel {
     fn scroll_to_page(&self, page_index: u32, animate: bool) {
         self.scroll_to(&self.nth_page(page_index), animate);
+    }
+}
+
+pub trait WindowExt {
+    fn set_distroy(&self, destroy: bool);
+}
+
+impl<T: IsA<Window>> WindowExt for T {
+    fn set_distroy(&self, destroy: bool) {
+        if destroy {
+            self.destroy();
+        }
     }
 }

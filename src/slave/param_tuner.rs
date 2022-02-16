@@ -1,4 +1,4 @@
-use std::{fmt::Debug, cmp::{max, min}, collections::{HashMap, VecDeque}, ops::Deref, time::{SystemTime, Duration}};
+use std::{fmt::Debug, cmp::{max, min}, collections::{HashMap, VecDeque}, ops::Deref, time::{SystemTime, Duration}, io::Error as IOError};
 use async_std::{net::TcpStream, task, prelude::*};
 
 use glib::{Sender, clone};
@@ -10,7 +10,8 @@ use relm4_macros::micro_widget;
 use serde::{Serialize, Deserialize};
 use derivative::*;
 
-use crate::{ui::graph_view::{GraphView, Point as GraphPoint}, slave::SlaveTcpMsg};
+use crate::ui::graph_view::{GraphView, Point as GraphPoint};
+use crate::slave::SlaveTcpMsg;
 
 use super::SlaveMsg;
 
@@ -56,8 +57,22 @@ const DEFAULT_PROPELLERS: [&'static str; 6] = ["front_left", "front_right", "bac
 const DEFAULT_CONTROL_LOOPS: [&'static str; 2] = ["depth_lock", "direction_lock"];
 const CARD_MIN_WIDTH: i32 = 300;
 
+trait SlaveParameterTunerWindowExt {
+    fn set_destroy(&self, destroy: bool);
+}
+
+impl SlaveParameterTunerWindowExt for PreferencesWindow {
+    fn set_destroy(&self, destroy: bool) {
+        if destroy {
+            self.destroy();
+        }
+    }
+}
+
 impl PropellerModel {
     pub fn new(key: &str) -> PropellerModel {
+        let a = PreferencesWindow::new();
+        a.set_destroy(false);
         PropellerModel {
             key: key.to_string(),
             ..Default::default()
@@ -159,6 +174,7 @@ pub struct SlaveParameterTunerModel {
     #[no_eq]
     tcp_msg_sender: Option<async_std::channel::Sender<SlaveParameterTunerTcpMsg>>,
     graph_view_point_num_limit: u16,
+    stopped: bool,
 }
 
 #[relm4::factory_prototype(pub)]
@@ -472,6 +488,7 @@ impl MicroWidgets<SlaveParameterTunerModel> for SlaveParameterTunerWidgets {
                 }
                 Some("参数调校")
             },
+            set_destroy: track!(model.changed(SlaveParameterTunerModel::stopped()), *model.get_stopped()),
             connect_close_request(sender) => move |_window| {
                 send!(sender, SlaveParameterTunerMsg::StopDebug);
                 Inhibit(false)
@@ -523,19 +540,19 @@ struct SlaveParameterTunerUpdatePacket {
     update_parameters: ()
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 enum SlaveParameterTunerTcpMsg {
     UploadParameters(SlaveParameterTunerPacket),
     RequestParameters,
     PreviewPropeller(String, i8),
-    ConnectionLost,
+    ConnectionLost(IOError),
     Terminate,
 }
 
 async fn parameter_tuner_handler(mut tcp_stream: TcpStream,
                                  tcp_sender: async_std::channel::Sender<SlaveParameterTunerTcpMsg>,
                                  tcp_receiver: async_std::channel::Receiver<SlaveParameterTunerTcpMsg>,
-                                 model_sender: Sender<SlaveParameterTunerMsg>) {
+                                 model_sender: Sender<SlaveParameterTunerMsg>) -> Result<(), IOError> {
     fn current_millis() -> u128 {
         SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis()
     }
@@ -546,37 +563,41 @@ async fn parameter_tuner_handler(mut tcp_stream: TcpStream,
         let mut buf = [0u8; 1024];
         loop {
             buf.fill(0);
-            match tcp_stream.read(&mut buf).await {
-                Ok(_) => {
-                    let json_string = match std::str::from_utf8(buf.split(|x| x.eq(&0)).next().unwrap()) {
-                        Ok(string) => string,
-                        Err(_) => continue,
-                    };
-                    let msg = serde_json::from_str::<SlaveParameterTunerFeedbackPacket>(&json_string).map(SlaveParameterTunerMsg::FeedbacksReceived)
-                        .or_else(|_| serde_json::from_str::<SlaveParameterTunerPacket>(&json_string).map(SlaveParameterTunerMsg::ParametersReceived));
-                    match msg {
-                        Ok(msg @ SlaveParameterTunerMsg::FeedbacksReceived(_)) => {
-                            send!(model_sender, msg);
-                        },
-                        Ok(msg @ SlaveParameterTunerMsg::ParametersReceived(_)) => {
-                            send!(model_sender, msg);
-                        },
-                        Ok(_) => unreachable!(),
-                        Err(err) => eprintln!("无法识别来自于下位机的JSON数据包（{}）：“{}”", err.to_string(), json_string),
-                    }
-                },
-                Err(_) => break,
-            };
+            if let Err(err) = tcp_stream.read(&mut buf).await {
+                tcp_sender.send(SlaveParameterTunerTcpMsg::ConnectionLost(err)).await.unwrap_or_default();
+                break;
+            } else {
+                let json_string = match std::str::from_utf8(buf.split(|x| x.eq(&0)).next().unwrap()) {
+                    Ok(string) => string,
+                    Err(_) => continue,
+                };
+                if json_string.is_empty() {
+                    tcp_sender.send(SlaveParameterTunerTcpMsg::ConnectionLost(IOError::new(std::io::ErrorKind::InvalidData, "下位机主动断开连接"))).await.unwrap_or_default();
+                    break;
+                }
+                let msg = serde_json::from_str::<SlaveParameterTunerFeedbackPacket>(&json_string).map(SlaveParameterTunerMsg::FeedbacksReceived)
+                    .or_else(|_| serde_json::from_str::<SlaveParameterTunerPacket>(&json_string).map(SlaveParameterTunerMsg::ParametersReceived));
+                match msg {
+                    Ok(msg @ SlaveParameterTunerMsg::FeedbacksReceived(_)) => {
+                        send!(model_sender, msg);
+                    },
+                    Ok(msg @ SlaveParameterTunerMsg::ParametersReceived(_)) => {
+                        send!(model_sender, msg);
+                    },
+                    Ok(_) => unreachable!(),
+                    Err(err) => eprintln!("无法识别来自于下位机的JSON数据包（{}）：“{}”", err.to_string(), json_string),
+                }
+            }
         }
-        tcp_sender.send(SlaveParameterTunerTcpMsg::ConnectionLost).await.unwrap();
     }));
+    
     let stop_propeller_preview_task = task::spawn(clone!(@strong tcp_sender, @strong last_preview_timestamp => async move {
         'outer: loop {
             let mut last_millis = last_preview_timestamp.lock().await;
             if let Some(millis) = *last_millis {
                 if current_millis() - millis >= PREVIEW_TIME_MILLIS {
                     for propeller_name in DEFAULT_PROPELLERS {
-                        if tcp_sender.send(SlaveParameterTunerTcpMsg::PreviewPropeller(propeller_name.to_string(), 0)).await.is_err() {
+                        if let Err(_) = tcp_sender.send(SlaveParameterTunerTcpMsg::PreviewPropeller(propeller_name.to_string(), 0)).await {
                             break 'outer;
                         }
                     }
@@ -586,7 +607,6 @@ async fn parameter_tuner_handler(mut tcp_stream: TcpStream,
             drop(last_millis);        // 防止阻塞主循环
             task::sleep(Duration::from_millis(500)).await;
         }
-        tcp_sender.send(SlaveParameterTunerTcpMsg::ConnectionLost).await.unwrap();
     }));
     
     loop {
@@ -595,20 +615,20 @@ async fn parameter_tuner_handler(mut tcp_stream: TcpStream,
                 match msg {
                     SlaveParameterTunerTcpMsg::UploadParameters(parameters) => {
                         let json_string = serde_json::to_string(&parameters).unwrap();
-                        tcp_stream.write_all(json_string.as_bytes()).await.unwrap();
-                        tcp_stream.flush().await.unwrap();
+                        tcp_stream.write_all(json_string.as_bytes()).await?;
+                        tcp_stream.flush().await?;
                     },
                     SlaveParameterTunerTcpMsg::RequestParameters => {
                         let json_string = serde_json::to_string(&SlaveParameterTunerLoadPacket::default()).unwrap();
-                        tcp_stream.write_all(json_string.as_bytes()).await.unwrap();
-                        tcp_stream.flush().await.unwrap();
+                        tcp_stream.write_all(json_string.as_bytes()).await?;
+                        tcp_stream.flush().await?;
                     },
                     SlaveParameterTunerTcpMsg::PreviewPropeller(name, value) => {
                         let json_string = serde_json::to_string(&SlaveParameterTunerSetPropellerPacket {
                             set_propeller_values: [(name, value)].into_iter().collect(),
                         }).unwrap();
-                        tcp_stream.write_all(json_string.as_bytes()).await.unwrap();
-                        tcp_stream.flush().await.unwrap();
+                        tcp_stream.write_all(json_string.as_bytes()).await?;
+                        tcp_stream.flush().await?;
                         if value != 0 {
                             *last_preview_timestamp.lock().await = Some(current_millis());
                         }
@@ -617,12 +637,15 @@ async fn parameter_tuner_handler(mut tcp_stream: TcpStream,
                         receive_task.cancel().await;
                         stop_propeller_preview_task.cancel().await;
                         let json_string = serde_json::to_string(&SlaveParameterTunerSavePacket::default()).unwrap();
-                        tcp_stream.write_all(json_string.as_bytes()).await.unwrap_or(());
-                        tcp_stream.flush().await.unwrap_or(());
+                        tcp_stream.write_all(json_string.as_bytes()).await.unwrap_or_default();
+                        tcp_stream.flush().await.unwrap_or_default();
                         break;
                     },
-                    SlaveParameterTunerTcpMsg::ConnectionLost => {
+                    SlaveParameterTunerTcpMsg::ConnectionLost(err) => {
                         send!(model_sender, SlaveParameterTunerMsg::StopDebug);
+                        tcp_stream.shutdown(std::net::Shutdown::Both).unwrap_or_default();
+                        tcp_receiver.close();
+                        return Err(err);
                     },
                 }
             },
@@ -630,6 +653,7 @@ async fn parameter_tuner_handler(mut tcp_stream: TcpStream,
         }
     }
     tcp_receiver.close();
+    Ok(())
 }
 
 impl MicroModel for SlaveParameterTunerModel {
@@ -709,12 +733,13 @@ impl MicroModel for SlaveParameterTunerModel {
                 tcp_sender.try_send(SlaveParameterTunerTcpMsg::RequestParameters).unwrap_or(());
                 let sender = sender.clone();
                 let handle = task::spawn(parameter_tuner_handler(tcp_stream, tcp_sender, tcp_receiver, sender));
-                send!(parent_sender, SlaveMsg::TcpMessage(SlaveTcpMsg::Block(handle)))
+                send!(parent_sender, SlaveMsg::TcpMessage(SlaveTcpMsg::Block(handle)));
             },
             SlaveParameterTunerMsg::StopDebug => {
                 if let Some(msg_sender) = self.get_tcp_msg_sender() {
-                    msg_sender.try_send(SlaveParameterTunerTcpMsg::Terminate).unwrap();
+                    msg_sender.try_send(SlaveParameterTunerTcpMsg::Terminate).unwrap_or_default();
                     self.set_tcp_msg_sender(None);
+                    self.set_stopped(true);
                 }
             },
             SlaveParameterTunerMsg::FeedbacksReceived(SlaveParameterTunerFeedbackPacket { feedbacks: SlaveParameterTunerFeedbackValuePacket { control_loops } }) => {
