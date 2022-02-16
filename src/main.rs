@@ -8,7 +8,6 @@ pub mod async_glib;
 use std::{cell::RefCell, net::Ipv4Addr, rc::Rc, ops::Deref};
 
 use glib::{MainContext, clone, Sender, WeakRef, DateTime, PRIORITY_DEFAULT};
-use gstreamer as gst;
 use gtk::{AboutDialog, Align, Box as GtkBox, Grid, Image, Inhibit, Label, MenuButton, Orientation, Stack, prelude::*, Button, ToggleButton, Separator, License};
 use adw::{ApplicationWindow, CenteringPolicy, ColorScheme, HeaderBar, StatusPage, StyleManager, prelude::*};
 use relm4::{AppUpdate, ComponentUpdate, Model, RelmApp, RelmComponent, Widgets, actions::{RelmAction, RelmActionGroup}, factory::FactoryVec, send, new_stateless_action, new_action_group};

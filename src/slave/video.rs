@@ -1,10 +1,9 @@
 use std::{ffi::c_void, str::FromStr, sync::{Arc, Mutex}};
 
 use glib::{Sender, clone, EnumClass};
-use gtk::{gdk_pixbuf::{Colorspace, Pixbuf}, prelude::*};
-use gstreamer as gst;
-use gstreamer_app as gst_app;
+use gtk::prelude::*;
 use gst::{Element, Pad, PadProbeType, Pipeline, element_error, prelude::*, PadProbeReturn, PadProbeData, EventView};
+use gdk_pixbuf::{Colorspace, Pixbuf};
 
 use opencv as cv;
 use cv::{core::VecN, types::VectorOfMat};

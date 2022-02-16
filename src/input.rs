@@ -1,6 +1,7 @@
 use std::{cell::RefCell, collections::HashMap, fmt::Debug, rc::Rc, sync::{Arc, Mutex}, time::Duration, ops::Deref};
 
 use glib::{Continue, MainContext, PRIORITY_HIGH, Sender};
+
 use sdl2::{JoystickSubsystem, Sdl, event::Event, joystick::Joystick};
 use fragile::Fragile;
 

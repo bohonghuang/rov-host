@@ -98,6 +98,8 @@ pub enum PreferencesMsg {
     SetDefaultVideoDecoder(VideoDecoder),
     SetParameterTunerGraphViewPointNumberLimit(u16),
     SaveToFile,
+    OpenVideoDirectory,
+    OpenImageDirectory,
 }
 
 impl Model for PreferencesModel {
@@ -209,7 +211,7 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
             },
             add = &PreferencesPage {
                 set_title: "视频",
-                set_icon_name: Some("emblem-videos-symbolic"),
+                set_icon_name: Some("video-display-symbolic"),
                 add = &PreferencesGroup {
                     set_title: "显示",
                     set_description: Some("上位机的显示的画面设置"),
@@ -265,8 +267,8 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                         set_title: "图片保存目录",
                         set_subtitle: track!(model.changed(PreferencesModel::image_save_path()), model.image_save_path.to_str().unwrap()),
                         set_activatable: true,
-                        connect_activated => move |_row| {
-                            
+                        connect_activated(sender) => move |_row| {
+                            send!(sender, PreferencesMsg::OpenImageDirectory);
                         }
                     },
                     add = &ComboRow {
@@ -292,8 +294,8 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                         set_title: "视频保存目录",
                         set_subtitle: track!(model.changed(PreferencesModel::video_save_path()), model.video_save_path.to_str().unwrap()),
                         set_activatable: true,
-                        connect_activated => move |_row| {
-                            
+                        connect_activated(sender) => move |_row| {
+                            send!(sender, PreferencesMsg::OpenVideoDirectory);
                         }
                     },
                     add = &ComboRow {
@@ -364,6 +366,8 @@ impl ComponentUpdate<AppModel> for PreferencesModel {
             PreferencesMsg::SetImageSavePath(path) => self.set_image_save_path(path),
             PreferencesMsg::SetImageSaveFormat(format) => self.set_image_save_format(format),
             PreferencesMsg::SetParameterTunerGraphViewPointNumberLimit(limit) => self.set_param_tuner_graph_view_point_num_limit(limit),
+            PreferencesMsg::OpenVideoDirectory => gtk::show_uri(None as Option<&PreferencesWindow>, glib::filename_to_uri(self.get_video_save_path().to_str().unwrap(), None).unwrap().as_str(), gdk::CURRENT_TIME),
+            PreferencesMsg::OpenImageDirectory => gtk::show_uri(None as Option<&PreferencesWindow>, glib::filename_to_uri(self.get_image_save_path().to_str().unwrap(), None).unwrap().as_str(), gdk::CURRENT_TIME),
         }
         send!(parent_sender, AppMsg::PreferencesUpdated(self.clone()));
     }

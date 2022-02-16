@@ -1,15 +1,10 @@
 use std::{path::PathBuf, fmt::Debug};
-use async_std::io::ReadExt;
-use async_std::net::TcpStream;
-use async_std::task;
-use async_std::prelude::*;
+use async_std::{io::ReadExt, net::TcpStream, task, prelude::*};
 
 use glib::Sender;
 use glib_macros::clone;
-use gtk::{Align, Box as GtkBox, Orientation, prelude::*, FileFilter, ProgressBar, FileChooserAction};
-use gtk::Button;
-use adw::{HeaderBar, PreferencesGroup, StatusPage, Window, prelude::*, ActionRow};
-use adw::Carousel;
+use gtk::{Align, Box as GtkBox, Orientation, prelude::*, FileFilter, ProgressBar, FileChooserAction, Button};
+use adw::{HeaderBar, PreferencesGroup, StatusPage, Window, prelude::*, ActionRow, Carousel};
 use once_cell::unsync::OnceCell;
 use relm4::{send, MicroWidgets, MicroModel};
 use relm4_macros::micro_widget;

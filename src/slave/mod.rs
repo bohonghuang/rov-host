@@ -5,8 +5,7 @@ pub mod slave_video;
 pub mod firmware_update;
 
 use std::{cell::RefCell, collections::{HashMap, VecDeque}, rc::Rc, sync::{Arc, Mutex}, fmt::Debug, time::{Duration, SystemTime}, ops::Deref};
-use async_std::{net::TcpStream, prelude::*, task::JoinHandle};
-use async_std::task;
+use async_std::{net::TcpStream, prelude::*, task::{JoinHandle, self}};
 
 use glib::{PRIORITY_DEFAULT, Sender, WeakRef, DateTime, MainContext};
 use glib_macros::clone;

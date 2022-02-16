@@ -1,9 +1,9 @@
 use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::{Arc, Mutex}, fmt::Debug};
 
 use glib::{MainContext, Sender, clone};
-use gstreamer as gst;
 use gst::{Pipeline, prelude::*};
-use gtk::{Box as GtkBox, Stack, gdk_pixbuf::Pixbuf, prelude::*, Picture};
+use gtk::{Box as GtkBox, Stack, prelude::*, Picture};
+use gdk_pixbuf::Pixbuf;
 use adw::StatusPage;
 use relm4::{send, MicroWidgets, MicroModel};
 use relm4_macros::micro_widget;
@@ -180,7 +180,7 @@ impl MicroModel for SlaveVideoModel {
             },
             SlaveVideoMsg::RequestFrame => {
                 if let Some(pipeline) = &self.pipeline {
-                    pipeline.by_name("display").unwrap().dynamic_cast::<gstreamer_app::AppSink>() .unwrap().send_event(gst::event::CustomDownstream::new(gst::Structure::new("resend", &[])));
+                    pipeline.by_name("display").unwrap().dynamic_cast::<gst_app::AppSink>() .unwrap().send_event(gst::event::CustomDownstream::new(gst::Structure::new("resend", &[])));
                 }
             },
         }
