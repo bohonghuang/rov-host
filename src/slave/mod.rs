@@ -781,7 +781,7 @@ impl MicroModel for SlaveModel {
                     pathbuf.push(format!("{}.mkv", DateTime::now_local().unwrap().format_iso8601().unwrap().replace(":", "-")));
                     send!(video.sender(), SlaveVideoMsg::StartRecord(pathbuf));
                 } else {
-                    send!(video.sender(), SlaveVideoMsg::StopRecord);
+                    send!(video.sender(), SlaveVideoMsg::StopRecord(None));
                 }
                 self.set_recording(None);
             },

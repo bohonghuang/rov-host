@@ -3,6 +3,7 @@ pub mod slave;
 pub mod prelude;
 pub mod input;
 pub mod ui;
+pub mod async_glib;
 
 use std::{cell::RefCell, net::Ipv4Addr, rc::Rc, ops::Deref};
 
@@ -317,7 +318,7 @@ impl AppUpdate for AppModel {
                     } else {
                         for (_index, component) in self.get_slaves().iter().enumerate() {
                             let model = component.model().unwrap();
-                            model.get_video().send(SlaveVideoMsg::StopRecord).unwrap();
+                            model.get_video().send(SlaveVideoMsg::StopRecord(None)).unwrap();
                         }
                         self.set_recording(Some(false));
                     }

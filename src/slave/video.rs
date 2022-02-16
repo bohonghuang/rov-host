@@ -14,6 +14,8 @@ use serde::{Serialize, Deserialize};
 
 use strum_macros::{EnumIter, EnumString as EnumFromString, Display as EnumToString};
 
+use crate::async_glib::{Future, Promise};
+
 use super::slave_config::SlaveConfigModel;
 
 #[derive(EnumIter, EnumToString, EnumFromString, PartialEq, Clone, Copy, Debug, Serialize, Deserialize)]
@@ -186,7 +188,7 @@ impl Default for VideoDecoder {
     fn default() -> Self { Self::H264Software }
 }
 
-pub fn connect_elements_to_pipeline(pipeline: &Pipeline, tee_name: &str, elements: &[Element]) -> Result<Pad, &'static str> {
+pub fn connect_elements_to_pipeline(pipeline: &Pipeline, tee_name: &str, elements: &[Element]) -> Result<(Element, Pad), &'static str> {
     let output_tee = pipeline.by_name(tee_name).ok_or("Cannot find output tee")?;
     if let Some(element) = elements.first() {
         pipeline.add(element).map_err(|_| "Cannot add an element")?; // 必须先添加，再连接
@@ -204,30 +206,40 @@ pub fn connect_elements_to_pipeline(pipeline: &Pipeline, tee_name: &str, element
     for element in elements {
         element.sync_state_with_parent().unwrap();
     }
-    Ok(teepad)
+    Ok((output_tee, teepad))
 }
 
-pub fn disconnect_elements_to_pipeline(pipeline: &Pipeline, teepad: &Pad, elements: &[Element]) -> Result<(), &'static str> {
-    // let output_tee = pipeline.by_name(tee_name).ok_or("Cannot find output tee")?;
+pub fn disconnect_elements_to_pipeline(pipeline: &Pipeline, (output_tee, teepad): &(Element, Pad), elements: &[Element]) -> Result<Future<()>, &'static str> {
     let first_sinkpad = elements.first().unwrap().static_pad("sink").unwrap();
     teepad.unlink(&first_sinkpad).map_err(|_| "Cannot unlink elements")?;
-    first_sinkpad.send_event(gst::event::Eos::new());
+    output_tee.remove_pad(teepad).map_err(|_| "Cannot remove pad")?;
     let last_sinkpad = elements.last().unwrap().sink_pads().into_iter().next().unwrap();
     let elements = elements.to_vec();
-    last_sinkpad.add_probe(PadProbeType::EVENT_BOTH, clone!(@strong teepad, @strong pipeline => move |_pad, info| {
-        let elements = elements.clone();
+    let promise = Promise::new();
+    let future = promise.future();
+    let promise = Mutex::new(Some(promise));
+    last_sinkpad.add_probe(PadProbeType::EVENT_BOTH, move |_pad, info| {
         match &info.data {
             Some(PadProbeData::Event(event)) => {
                 if let EventView::Eos(_) = event.view() {
-                    pipeline.remove_many(&elements.iter().collect::<Vec<_>>()).map_err(|_| "Cannot remove elements").unwrap();
-                    // output_tee.remove_pad(&teepad).map_err(|_| "Cannot remove pad from output tee").unwrap();
+                    promise.lock().unwrap().take().unwrap().success(());
+                    PadProbeReturn::Remove
+                } else {
+                    PadProbeReturn::Ok
                 }
             },
-            _ => (),
+            _ => PadProbeReturn::Ok,
         }
-        PadProbeReturn::Remove
+        
+    });
+    first_sinkpad.send_event(gst::event::Eos::new());
+    let future = future.map(clone!(@strong pipeline => move |_| {
+        pipeline.remove_many(&elements.iter().collect::<Vec<_>>()).map_err(|_| "Cannot remove elements").unwrap();
+        for element in elements.iter() {
+            element.set_state(gst::State::Null).unwrap();
+        }
     }));
-    Ok(())
+    Ok(future)
 }
 
 pub fn create_pipeline(port: u16, decoder: VideoDecoder) -> Result<gst::Pipeline, &'static str> {

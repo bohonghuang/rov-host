@@ -10,7 +10,7 @@ use relm4_macros::micro_widget;
 
 use derivative::*;
 
-use crate::{preferences::PreferencesModel, slave::video::{MatExt, ImageFormat}};
+use crate::{preferences::PreferencesModel, slave::video::{MatExt, ImageFormat}, async_glib::{Promise, Future}};
 use super::{slave_config::SlaveConfigModel, SlaveMsg};
 
 #[tracker::track(pub)]
@@ -23,7 +23,7 @@ pub struct SlaveVideoModel {
     pub pipeline: Option<Pipeline>,
     #[no_eq]
     pub config: Arc<Mutex<SlaveConfigModel>>,
-    pub record_handle: Option<(gst::Pad, Vec<gst::Element>)>,
+    pub record_handle: Option<((gst::Element, gst::Pad), Vec<gst::Element>)>,
     #[derivative(Default(value="Rc::new(RefCell::new(PreferencesModel::load_or_default()))"))]
     pub preferences: Rc<RefCell<PreferencesModel>>, 
 }
@@ -49,7 +49,7 @@ pub enum SlaveVideoMsg {
     StopPipeline,
     SetPixbuf(Option<Pixbuf>),
     StartRecord(PathBuf),
-    StopRecord,
+    StopRecord(Option<Promise<()>>),
     ConfigUpdated(SlaveConfigModel),
     SaveScreenshot(PathBuf),
     RequestFrame,
@@ -97,11 +97,16 @@ impl MicroModel for SlaveVideoModel {
                     }
                 }
             },
-            SlaveVideoMsg::StopRecord => {
+            SlaveVideoMsg::StopRecord(promise) => {
                 if let Some(pipeline) = &self.pipeline {
                     if let Some((teepad, elements)) = &self.record_handle {
-                        super::video::disconnect_elements_to_pipeline(pipeline, teepad, elements).unwrap();
-                        send!(parent_sender, SlaveMsg::RecordingChanged(false));
+                        super::video::disconnect_elements_to_pipeline(pipeline, teepad, elements).unwrap().for_each(clone!(@strong parent_sender => move |_| {
+                            send!(parent_sender, SlaveMsg::RecordingChanged(false));
+                            if let Some(promise) = promise {
+                                promise.success(());
+                            }
+                        }));
+                        
                     }
                     self.set_record_handle(None);
                 }
@@ -134,24 +139,36 @@ impl MicroModel for SlaveVideoModel {
             },
             SlaveVideoMsg::StopPipeline => {
                 assert!(self.pipeline != None);
+                let mut futures = Vec::<Future<()>>::new();
                 if self.is_recording() {
-                    self.update(SlaveVideoMsg::StopRecord, parent_sender, sender.clone());
+                    let promise = Promise::new();
+                    let future = promise.future();
+                    self.update(SlaveVideoMsg::StopRecord(Some(promise)), parent_sender, sender.clone());
+                    futures.push(future);
                 }
+                let promise = Promise::new();
+                futures.push(promise.future());
+                let promise = Mutex::new(Some(promise));
                 if let Some(pipeline) = &self.pipeline {
                     let sinkpad = pipeline.by_name("display").unwrap().sink_pads().into_iter().next().unwrap();
                     pipeline.send_event(gst::event::Eos::new());
-                    sinkpad.add_probe(gst::PadProbeType::EVENT_BOTH, clone!(@strong pipeline, @strong parent_sender => move |_pad, info| {
+                    sinkpad.add_probe(gst::PadProbeType::EVENT_BOTH, move |_pad, info| {
                         match &info.data {
                             Some(gst::PadProbeData::Event(event)) => {
                                 if let gst::EventView::Eos(_) = event.view() {
-                                    send!(parent_sender, SlaveMsg::PollingChanged(false));
+                                    promise.lock().unwrap().take().unwrap().success(());
                                 }
                             },
                             _ => (),
                         }
                         gst::PadProbeReturn::Remove
-                    }));
-                    self.pipeline = None;
+                    });
+                    if let Some(pipeline) = self.pipeline.take() {
+                        Future::sequence(futures.into_iter()).for_each(clone!(@strong parent_sender => move |_| {
+                            send!(parent_sender, SlaveMsg::PollingChanged(false));
+                            pipeline.set_state(gst::State::Null).unwrap();
+                        }));
+                    }
                 }
             },
             SlaveVideoMsg::SaveScreenshot(pathbuf) => {
