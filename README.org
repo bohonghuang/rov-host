@@ -1,5 +1,5 @@
 #+TITLE: 水下机器人上位机
-[[file:documents/screenshot.webp]]
+[[./documents/screenshot.webp]]
 * 特性
 - 使用 [[https://www.rust-lang.org][Rust]] 进行高性能、内存安全的应用程序的开发
 - 基于 [[https://gtk.org][GTK4]]/[[https://gitlab.gnome.org/GNOME/libadwaita][Libadwaita]] 构建现代的[[https://wikipedia.org/wiki/Graphical_user_interface][图形用户界面]]
@@ -57,7 +57,7 @@
       // ...
   }
 #+END_SRC
-当前有效命令如下：
+当前有效发送命令如下：
 | 命令                        | 描述                   |
 |-----------------------------+------------------------|
 | ~x~                           | 控制机器人左右平移     |
