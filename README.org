@@ -10,7 +10,7 @@
   - 全屏模式
   - 夜间模式
 - 通过 [[https://www.libsdl.org][SDL2]] 支持多手柄输入
-- 通过 [[https://gstreamer.freedesktop.org][GStreamer]] 对 [[https://wikipedia.org/wiki/Real-time_Transport_Protocol][RTP]] 视频流进行各种多种的实时编解码（支持硬件加速）
+- 通过 [[https://gstreamer.freedesktop.org][GStreamer]] 对 [[https://wikipedia.org/wiki/Real-time_Transport_Protocol][RTP]] 视频流进行多种格式的实时编解码（支持硬件加速）
   - 视频拉流（解码）
     - [[https://wikipedia.org/wiki/H.264][H.264]]
     - [[https://wikipedia.org/wiki/H.265][H.265]]
@@ -21,7 +21,7 @@
     - [[https://wikipedia.org/wiki/VP8][VP8]]
     - [[https://wikipedia.org/wiki/VP9][VP9]]
 - 使用 [[https://opencv.org][OpenCV]] 进行实时图像后处理（图像增强）
-- 支持使用多种图像格式保存后处理后的图像
+- 支持使用多种图像格式保存经过后处理的图像
   - [[https://wikipedia.org/wiki/JPEG][JPEG]]
   - [[https://wikipedia.org/wiki/Portable_Network_Graphics][PNG]]
   - [[https://wikipedia.org/wiki/TIFF][TIFF]]
@@ -46,18 +46,17 @@
 - [[https://gstreamer.freedesktop.org][GStreamer]] 
 - [[https://opencv.org][OpenCV]]
 * 通信
-上位机与下位机之间使用 [[https://wikipedia.org/wiki/JSON][JSON]] 数据包通过 [[https://wikipedia.org/wiki/Transmission_Control_Protocol][TCP]] 协议进行通信，一个数据包可以部分包含任意数量的有效命令，
-基本框架如下：
+上位机与下位机之间使用 [[https://wikipedia.org/wiki/JSON][JSON]] 数据包通过 [[https://wikipedia.org/wiki/Transmission_Control_Protocol][TCP]] 协议进行通信，一个数据包可以包含任意数量的有效命令，基本框架如下：
 #+BEGIN_SRC json
   {
-      "command1" : null
+      "command1" : null,
       "command2" : "arg",
       "command3" : ["arg1", "arg2"],
-      "command4": { "key1": "value1", "key2": "value2" }
+      "command4" : { "key1": "value1", "key2": "value2" }
       // ...
   }
 #+END_SRC
-当前有效发送命令如下：
+当前有效的发送命令如下：
 | 命令                        | 描述                   |
 |-----------------------------+------------------------|
 | ~x~                           | 控制机器人左右平移     |
@@ -69,7 +68,7 @@
 | ~save_parameters~             | 保存参数               |
 | ~load_parameters~             | 请求读取参数           |
 | ~firmware_update~             | 进行固件更新           |
-有效的接收命令如下：
+当前有效的接收命令如下：
 | 命令                        | 描述           |
 |-----------------------------+----------------|
 | ~feedbacks~                   | 反馈数据       |
@@ -98,7 +97,7 @@
       }
   }
 #+END_SRC
-可以使用 ~set_propeller_values~ 命令一次性设置多个电机输出，范围在 ~-128~ 至  ~127~ 之间。
+~set_propeller_values~ 命令可以一次性设置多个推进器输出，范围在 ~-128~ 与  ~127~ 之间。
 *** 设置参数
 #+BEGIN_SRC json
   {
@@ -129,28 +128,29 @@
 #+END_SRC
 下位机接收到该命令后，向上位机发送[[设置参数][设置参数]]数据包。
 **** 保存参数
+上位机向下位机发送：
 #+BEGIN_SRC json
 { "save_parameters" : null }
 #+END_SRC
-下位机接收到该命令后，将 [[https://wikipedia.org/wiki/Random-access_memory][内存]] 中的参数写入 [[https://wikipedia.org/wiki/Non-volatile_memory][非易失性存储器]] 中，以便记忆保存设置的参数。
+下位机接收到该命令后，将 [[https://wikipedia.org/wiki/Random-access_memory][内存]] 中的参数写入 [[https://wikipedia.org/wiki/Non-volatile_memory][非易失性存储器]] 中，以便记忆设置的参数。
 *** 固件更新
-上位机先发送以下命令：
+上位机先向下位机发送：
 #+BEGIN_SRC json
   {
       "firmware_update": {
           "size"        : 12345678,                          // 数据包大小
-          "compression" : "gzip",                            // 压缩方式："gzip" 、 "none"
+          "compression" : "gzip",                            // 压缩方式："gzip" 、"none"
           "md5"         : "3f89ba32a56cb03b5d4e93ed2d033f75" // MD5 校验
       }
   }
 #+END_SRC
-然后直接向下位机发送以 ~compression~ 方式压缩的二进制流，下位机接收到此命令后，
-应当立即准备接收长度为 ~size~ 的数据包。下位机接收完成后，通过 ~compression~ 方式进行解压，在对解压后的数据进行 [[https://wikipedia.org/wiki/MD5][MD5]] 校验无误后，
-直接替换机内的下位机可执行文件，然后重启完成固件更新。
+然后直接向下位机发送以 ~compression~ 方式压缩的二进制流。下位机接收到此命令后，
+立即准备接收长度为 ~size~ 的数据包。下位机接收完成后，以 ~compression~ 方式解压并对解压后的数据进行 [[https://wikipedia.org/wiki/MD5][MD5]] 校验。
+如果校验的结果与 ~md5~ 一致，直接替换下位机可执行文件，然后重启完成固件更新。
 ** 接收
 *** 反馈
-上位机支持在调节控制环时，通过图表实时可视化显示下位机传感器数据，
-下位机应当以一定时间间隔向上位机发送反馈数据：
+上位机支持在调节控制环时，通过图表的方式实时可视化显示下位机传感器数据，
+下位机以一定时间间隔向上位机发送反馈数据：
 #+BEGIN_SRC json
   {
       "feedbacks": {
