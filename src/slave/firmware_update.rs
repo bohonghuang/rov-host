@@ -228,7 +228,7 @@ impl MicroWidgets<SlaveFirmwareUpdaterModel> for SlaveFirmwareUpdaterWidgets {
                         set_title: track!(model.changed(SlaveFirmwareUpdaterModel::firmware_uploading_progress()), if *model.get_firmware_uploading_progress() >= 0.0 { "固件更新成功" } else { "固件更新失败" }),
                         set_hexpand: true,
                         set_vexpand: true,
-                        set_description: track!(model.changed(SlaveFirmwareUpdaterModel::firmware_uploading_progress()), Some(if *model.get_firmware_uploading_progress() >= 0.0 { "机器人将自动重启，请稍后手动进行连接。" } else { "请检查网络连接。" })),
+                        set_description: track!(model.changed(SlaveFirmwareUpdaterModel::firmware_uploading_progress()), Some(if *model.get_firmware_uploading_progress() >= 0.0 { "机器人将自动重启，请稍后手动进行连接。" } else { "请检查文件与网络连接是否正常。" })),
                         set_child = Some(&Button) {
                             set_css_classes: &["suggested-action", "pill"],
                             set_halign: Align::Center,

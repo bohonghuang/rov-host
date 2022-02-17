@@ -1,0 +1,177 @@
+#+TITLE: 水下机器人上位机
+[[file:documents/screenshot.webp]]
+* 特性
+- 使用 [[https://www.rust-lang.org][Rust]] 进行高性能、内存安全的应用程序的开发
+- 基于 [[https://gtk.org][GTK4]]/[[https://gitlab.gnome.org/GNOME/libadwaita][Libadwaita]] 构建现代的[[https://wikipedia.org/wiki/Graphical_user_interface][图形用户界面]]
+  - 跨平台
+    - [[https://wikipedia.org/wiki/Microsoft_Windows][Microsoft Windows]]
+    - [[https://wikipedia.org/wiki/MacOS][MacOS]]
+    - [[https://wikipedia.org/wiki/Linux][GNU/Linux]]
+  - 全屏模式
+  - 夜间模式
+- 通过 [[https://www.libsdl.org][SDL2]] 支持多手柄输入
+- 通过 [[https://gstreamer.freedesktop.org][GStreamer]] 对 [[https://wikipedia.org/wiki/Real-time_Transport_Protocol][RTP]] 视频流进行各种多种的实时编解码（支持硬件加速）
+  - 视频拉流（解码）
+    - [[https://wikipedia.org/wiki/H.264][H.264]]
+    - [[https://wikipedia.org/wiki/H.265][H.265]]
+  - 视频录制（编码）
+    - 不编码（跟随拉取视频流的编码）
+    - [[https://wikipedia.org/wiki/H.264][H.264]]
+    - [[https://wikipedia.org/wiki/H.265][H.265]]
+    - [[https://wikipedia.org/wiki/VP8][VP8]]
+    - [[https://wikipedia.org/wiki/VP9][VP9]]
+- 使用 [[https://opencv.org][OpenCV]] 进行实时图像后处理（图像增强）
+- 支持使用多种图像格式保存后处理后的图像
+  - [[https://wikipedia.org/wiki/JPEG][JPEG]]
+  - [[https://wikipedia.org/wiki/Portable_Network_Graphics][PNG]]
+  - [[https://wikipedia.org/wiki/TIFF][TIFF]]
+  - [[https://wikipedia.org/wiki/BMP_file_format][BMP]]
+- 多机位并行操作、并行显示与同步录制
+- 在线固件更新
+- 在线参数调整
+* 构建
+请确保 [[https://www.rust-lang.org][Rust]] 与 [[https://doc.rust-lang.org/cargo][Cargo]] 已正确安装，并运行：
+- [[https://wikipedia.org/wiki/Microsoft_Windows][Microsoft Windows]] \\
+  #+BEGIN_SRC bat
+    cargo rustc --release -- -C link-args=-mwindows
+  #+END_SRC
+- [[https://wikipedia.org/wiki/MacOS][MacOS]]、[[https://wikipedia.org/wiki/Linux][GNU/Linux]] \\
+  #+BEGIN_SRC sh
+    cargo build --release
+  #+END_SRC
+** 编译依赖
+- [[https://gtk.org][GTK4]]
+- [[https://gitlab.gnome.org/GNOME/libadwaita][Libadwaita]]
+- [[https://www.libsdl.org][SDL2]]
+- [[https://gstreamer.freedesktop.org][GStreamer]] 
+- [[https://opencv.org][OpenCV]]
+* 通信
+上位机与下位机之间使用 [[https://wikipedia.org/wiki/JSON][JSON]] 数据包通过 [[https://wikipedia.org/wiki/Transmission_Control_Protocol][TCP]] 协议进行通信，一个数据包可以部分包含任意数量的有效命令，
+基本框架如下：
+#+BEGIN_SRC json
+  {
+      "command1" : null
+      "command2" : "arg",
+      "command3" : ["arg1", "arg2"],
+      "command4": { "key1": "value1", "key2": "value2" }
+      // ...
+  }
+#+END_SRC
+当前有效命令如下：
+| 命令                        | 描述                   |
+|-----------------------------+------------------------|
+| ~x~                           | 控制机器人左右平移     |
+| ~y~                           | 控制机器人前进或后退   |
+| ~z~                           | 控制机器人的上浮或下沉 |
+| ~set_propeller_values~        | [[设置推进器输出][设置推进器输出]]         |
+| ~set_propeller_parameters~    | [[设置参数][设置推进器参数]]         |
+| ~set_control_loop_parameters~ | [[设置参数][设置控制环参数]]         |
+| ~save_parameters~             | 保存参数               |
+| ~load_parameters~             | 请求读取参数           |
+| ~firmware_update~             | 进行固件更新           |
+有效的接收命令如下：
+| 命令                        | 描述           |
+|-----------------------------+----------------|
+| ~feedbacks~                   | 反馈数据       |
+| ~set_propeller_parameters~    | [[设置参数][设置推进器参数]] |
+| ~set_control_loop_parameters~ | [[设置参数][设置控制环参数]] |
+| ~info~                        | 显示任意信息   |
+** 发送
+*** 控制
+#+BEGIN_SRC json
+  {
+      "x"                : 0.0,   // 左右平移
+      "y"                : -0.5,  // 前进后退
+      "z"                : 0.8,   // 上浮下沉
+      "rot"              : 0.1,   // 左右旋转
+      "depth_locked"     : false, // 深度锁定
+      "direction_locked" : true   // 方向锁定
+  }
+#+END_SRC
+*** 设置推进器输出
+#+BEGIN_SRC json
+  {
+      "set_propeller_values": {
+          "front_left" : 127,     // 推进器名称与输出
+          "back_right" : -128
+          // ...
+      }
+  }
+#+END_SRC
+可以使用 ~set_propeller_values~ 命令一次性设置多个电机输出，范围在 ~-128~ 至  ~127~ 之间。
+*** 设置参数
+#+BEGIN_SRC json
+  {
+      "set_propeller_parameters": {    // 推进器参数
+          "back_right": {              // 推进器名称
+              "deadzone_upper" : 8,    // 死区上限
+              "deadzone_lower" : -12,  // 死区下限
+              "power"          : 0.75, // 动力百分比 
+              "enabled"        : true  // 启用/禁用推进器
+          }
+          // ...
+      },
+      "set_control_loop_parameters": { // 控制环参数
+          "depth_lock": {              // 控制环名称
+              "p" : 1.0,               // 比例调节
+              "i" : 2.0,               // 积分调节
+              "d" : 0.5                // 微分调节
+          }
+          // ...
+      }
+  }
+#+END_SRC
+*** 读取/保存参数
+**** 读取参数
+上位机向下位机发送：
+#+BEGIN_SRC json
+{ "load_parameters" : null }
+#+END_SRC
+下位机接收到该命令后，向上位机发送[[设置参数][设置参数]]数据包。
+**** 保存参数
+#+BEGIN_SRC json
+{ "save_parameters" : null }
+#+END_SRC
+下位机接收到该命令后，将 [[https://wikipedia.org/wiki/Random-access_memory][内存]] 中的参数写入 [[https://wikipedia.org/wiki/Non-volatile_memory][非易失性存储器]] 中，以便记忆保存设置的参数。
+*** 固件更新
+上位机先发送以下命令：
+#+BEGIN_SRC json
+  {
+      "firmware_update": {
+          "size"        : 12345678,                          // 数据包大小
+          "compression" : "gzip",                            // 压缩方式："gzip" 、 "none"
+          "md5"         : "3f89ba32a56cb03b5d4e93ed2d033f75" // MD5 校验
+      }
+  }
+#+END_SRC
+然后直接向下位机发送以 ~compression~ 方式压缩的二进制流，下位机接收到此命令后，
+应当立即准备接收长度为 ~size~ 的数据包。下位机接收完成后，通过 ~compression~ 方式进行解压，在对解压后的数据进行 [[https://wikipedia.org/wiki/MD5][MD5]] 校验无误后，
+直接替换机内的下位机可执行文件，然后重启完成固件更新。
+** 接收
+*** 反馈
+上位机支持在调节控制环时，通过图表实时可视化显示下位机传感器数据，
+下位机应当以一定时间间隔向上位机发送反馈数据：
+#+BEGIN_SRC json
+  {
+      "feedbacks": {
+          "control_loops": {
+              "depth_lock"     : 1.0,
+              "direction_lock" : -1.0
+              // ...
+          }
+      }
+  }
+#+END_SRC
+上位机接收到数据后，显示的图表会根据用户设置进行更新。
+*** 信息
+上位机支持在操作机器人过程中，实时显示机器人的信息，如航向角、舱内温度等。
+下位机可以向上位机发送任何想要显示的信息：
+#+BEGIN_SRC json
+  {
+      "info": {
+          "温度"   : "25℃",
+          "航向角" : "37°"
+          // ...
+      }
+  }
+#+END_SRC

@@ -9,6 +9,7 @@ edition = "2021"
 glib = "0.15"
 gtk = { package = "gtk4", version = "0.4", features = ["v4_4"] }
 gdk = { package = "gdk4", version = "0.4" }
+gsk = { package = "gsk4", version = "0.4" }
 gdk-pixbuf = "0.15"
 glib-macros = "0.15"
 gio = "0.15"

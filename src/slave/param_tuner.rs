@@ -521,8 +521,8 @@ struct SlaveParameterTunerSetPropellerPacket {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SlaveParameterTunerPacket {
-    propellers: HashMap<String, Propeller>,
-    control_loops: HashMap<String, ControlLoop>,
+    set_propeller_parameters: HashMap<String, Propeller>,
+    set_control_loop_parameters: HashMap<String, ControlLoop>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -572,7 +572,7 @@ async fn parameter_tuner_handler(mut tcp_stream: TcpStream,
                     Err(_) => continue,
                 };
                 if json_string.is_empty() {
-                    tcp_sender.send(SlaveParameterTunerTcpMsg::ConnectionLost(IOError::new(std::io::ErrorKind::InvalidData, "下位机主动断开连接"))).await.unwrap_or_default();
+                    tcp_sender.send(SlaveParameterTunerTcpMsg::ConnectionLost(IOError::new(std::io::ErrorKind::ConnectionAborted, "下位机主动断开连接（EOF）"))).await.unwrap_or_default();
                     break;
                 }
                 let msg = serde_json::from_str::<SlaveParameterTunerFeedbackPacket>(&json_string).map(SlaveParameterTunerMsg::FeedbacksReceived)
@@ -721,8 +721,8 @@ impl MicroModel for SlaveParameterTunerModel {
             SlaveParameterTunerMsg::ApplyParameters => {
                 if let Some(msg_sender) = self.get_tcp_msg_sender() {
                     msg_sender.try_send(SlaveParameterTunerTcpMsg::UploadParameters(SlaveParameterTunerPacket {
-                        propellers: PropellerModel::vec_to_map(self.propellers.iter().collect()),
-                        control_loops: ControlLoopModel::vec_to_map(self.control_loops.iter().collect()),
+                        set_propeller_parameters: PropellerModel::vec_to_map(self.propellers.iter().collect()),
+                        set_control_loop_parameters: ControlLoopModel::vec_to_map(self.control_loops.iter().collect()),
                     })).unwrap_or(());
                 }
                 // send!(sender, SlaveParameterTunerMsg::FeedbacksReceived(SlaveParameterTunerFeedbackPacket { feedbacks: SlaveParameterTunerFeedbackValuePacket { control_loops: [("depth_lock".to_string(), rand::thread_rng().gen_range(-100..=100) as f32 / 100.0)].into_iter().collect() } })); // Debug
@@ -755,7 +755,7 @@ impl MicroModel for SlaveParameterTunerModel {
                     }
                 }
             },
-            SlaveParameterTunerMsg::ParametersReceived(SlaveParameterTunerPacket { propellers, control_loops }) => {
+            SlaveParameterTunerMsg::ParametersReceived(SlaveParameterTunerPacket { set_propeller_parameters: propellers, set_control_loop_parameters: control_loops }) => {
                 for index in 0..self.propellers.len() {
                     let propeller_model = self.propellers.get_mut(index).unwrap();
                     if let Some(propeller) = propellers.get(propeller_model.get_key()) {

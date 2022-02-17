@@ -213,7 +213,7 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                         },
                         append = &Button {
                             set_icon_name: "video-display-symbolic",
-                            set_sensitive: track!(model.changed(SlaveModel::sync_recording()) || model.changed(SlaveModel::polling()), model.polling != None && !model.sync_recording),
+                            set_sensitive: track!(model.changed(SlaveModel::recording()) || model.changed(SlaveModel::sync_recording()) || model.changed(SlaveModel::polling()), model.get_recording().is_some() && model.get_polling().is_some() && !model.sync_recording),
                             set_css_classes?: watch!(model.polling.map(|x| if x { vec!["circular", "destructive-action"] } else { vec!["circular"] }).as_ref()),
                             set_tooltip_text: track!(model.changed(SlaveModel::polling()), model.polling.map(|x| if x { "停止拉流" } else { "启动拉流" })),
                             connect_clicked(sender) => move |_button| {
@@ -345,7 +345,7 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                                             set_center_widget = Some(&Label) {
                                                 set_margin_start: 10,
                                                 set_margin_end: 10,
-                                                set_text: "机位信息",
+                                                set_text: "状态信息",
                                             },
                                             set_end_widget = Some(&Image) {
                                                 set_icon_name: watch!(Some(if model.slave_info_displayed { "go-down-symbolic" } else { "go-next-symbolic" })),
@@ -428,7 +428,7 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                                             append = &CenterBox {
                                                 set_hexpand: true,
                                                 set_start_widget = Some(&Label) {
-                                                    set_text: "深度锁定",
+                                                    set_markup: "<b>深度锁定</b>",
                                                 },
                                                 set_end_widget = Some(&Switch) {
                                                     set_active: track!(model.changed(SlaveModel::status()), model.get_target_status(&SlaveStatusClass::DepthLocked) != 0),
@@ -441,7 +441,7 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                                             append = &CenterBox {
                                                 set_hexpand: true,
                                                 set_start_widget = Some(&Label) {
-                                                    set_text: "方向锁定",
+                                                    set_markup: "<b>方向锁定</b>",
                                                 },
                                                 set_end_widget = Some(&Switch) {
                                                     set_active: track!(model.changed(SlaveModel::status()), model.get_target_status(&SlaveStatusClass::DirectionLocked) != 0),
@@ -556,7 +556,7 @@ async fn tcp_main_handler(input_rate: u16,
                         Err(_) => continue,
                     };
                     if json_string.is_empty() {
-                        tcp_sender.send(SlaveTcpMsg::ConnectionLost(IOError::new(std::io::ErrorKind::InvalidData, "下位机主动断开连接"))).await.unwrap_or_default();
+                        tcp_sender.send(SlaveTcpMsg::ConnectionLost(IOError::new(std::io::ErrorKind::ConnectionAborted, "下位机主动断开连接（EOF）"))).await.unwrap_or_default();
                         break;
                     }
                     let msg = serde_json::from_str::<SlaveInfoPacket>(&json_string);
@@ -753,18 +753,17 @@ impl MicroModel for SlaveModel {
                 }
             },
             SlaveMsg::DestroySlave => {
-                match (self.get_polling(), self.get_connected()) {
-                    (Some(polling), Some(connected)) => {
-                        if *polling {
-                            send!(self.video.sender(), SlaveVideoMsg::StopPipeline);
-                        }
-                        if *connected {
-                            send!(sender, SlaveMsg::ToggleConnect);
-                        }
-                        send!(parent_sender, AppMsg::DestroySlave(self as *const Self));
-                    },
-                    _ => (),
+                if let Some(polling) = self.get_polling() {
+                    if *polling {
+                        send!(self.video.sender(), SlaveVideoMsg::StopPipeline);
+                    }
                 }
+                if let Some(connected) = self.get_connected() {
+                    if *connected {
+                        send!(sender, SlaveMsg::ToggleConnect);
+                    }
+                }
+                send!(parent_sender, AppMsg::DestroySlave(self as *const Self));
             },
             SlaveMsg::ErrorMessage(msg) => {
                 error_message("错误", &msg, window.upgrade().as_ref());

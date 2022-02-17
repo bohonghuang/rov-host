@@ -259,14 +259,14 @@ pub fn create_pipeline(port: u16, decoder: VideoDecoder) -> Result<gst::Pipeline
     udpsrc.set_property("port", port as i32);
     let caps_app = gst::caps::Caps::from_str("video/x-raw, format=RGB").map_err(|_| "Cannot create capability for appsink")?;
     appsink.set_property("caps", caps_app);
-    let tee_raw = gst::ElementFactory::make("tee", Some("tee_raw")).map_err(|_| "Missing element: tee")?;
+    let tee_source = gst::ElementFactory::make("tee", Some("tee_source")).map_err(|_| "Missing element: tee")?;
     let tee_decoded = gst::ElementFactory::make("tee", Some("tee_decoded")).map_err(|_| "Missing element: tee")?;
     let queue_to_decode = gst::ElementFactory::make("queue", None).map_err(|_| "Missing element: queue")?;
     let queue_to_app = gst::ElementFactory::make("queue", None).map_err(|_| "Missing element: queue")?;
     let videoconvert = gst::ElementFactory::make("videoconvert", None).map_err(|_| "Missing element: videoconvert")?;
     let (depay_elements, decoder_elements) = decoder.gst_main_elements()?;
     
-    pipeline.add_many(&[&udpsrc, &appsink, &tee_decoded, &tee_raw, &videoconvert, &queue_to_app, &queue_to_decode]).map_err(|_| "Cannot create pipeline")?;
+    pipeline.add_many(&[&udpsrc, &appsink, &tee_decoded, &tee_source, &videoconvert, &queue_to_app, &queue_to_decode]).map_err(|_| "Cannot create pipeline")?;
     for depay_element in &depay_elements {
         pipeline.add(depay_element).map_err(|_| "Cannot add depay elements to pipeline")?;
     }
@@ -286,7 +286,7 @@ pub fn create_pipeline(port: u16, decoder: VideoDecoder) -> Result<gst::Pipeline
     match (depay_elements.first(), depay_elements.last()) {
         (Some(first), Some(last)) => {
             udpsrc.link(first).map_err(|_| "Cannot link udpsrc to the first depay element")?;
-            last.link(&tee_raw).map_err(|_| "Cannot link the last depay element to tee")?;
+            last.link(&tee_source).map_err(|_| "Cannot link the last depay element to tee")?;
         },
         _ => return Err("Missing depay element"),
     }
@@ -301,7 +301,7 @@ pub fn create_pipeline(port: u16, decoder: VideoDecoder) -> Result<gst::Pipeline
     queue_to_app.set_property_from_value("leaky", &EnumClass::new(queue_to_app.property_type("leaky").unwrap()).unwrap().to_value(2).unwrap());
     // appsink.set_property("sync", true);
     videoconvert.link(&appsink).map_err(|_| "Cannot link videoconvert to appsink")?;
-    tee_raw.request_pad_simple("src_%u").unwrap().link(&queue_to_decode.static_pad("sink").unwrap()).map_err(|_| "Cannot link tee to decoder queue")?;
+    tee_source.request_pad_simple("src_%u").unwrap().link(&queue_to_decode.static_pad("sink").unwrap()).map_err(|_| "Cannot link tee to decoder queue")?;
     tee_decoded.request_pad_simple("src_%u").unwrap().link(&queue_to_app.static_pad("sink").unwrap()).map_err(|_| "Cannot link tee to appsink queue")?;
     Ok(pipeline)
 }

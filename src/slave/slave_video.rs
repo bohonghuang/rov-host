@@ -81,7 +81,7 @@ impl MicroModel for SlaveVideoModel {
                         },
                         None => {
                             let elements = self.config.lock().unwrap().video_decoder.gst_record_elements(&pathbuf.to_str().unwrap());
-                            let elements_and_pad = elements.and_then(|elements| super::video::connect_elements_to_pipeline(pipeline, "tee_raw", &elements).map(|pad| (elements, pad)));
+                            let elements_and_pad = elements.and_then(|elements| super::video::connect_elements_to_pipeline(pipeline, "tee_source", &elements).map(|pad| (elements, pad)));
                             elements_and_pad
                         },
                     };
