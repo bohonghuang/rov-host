@@ -47,9 +47,9 @@ pub struct SlaveVideoModel {
 }
 
 impl SlaveVideoModel {
-    pub fn new(preferences: Rc<RefCell<PreferencesModel>>) -> Self {
+    pub fn new(preferences: Rc<RefCell<PreferencesModel>>, config: Arc<Mutex<SlaveConfigModel>>) -> Self {
         SlaveVideoModel {
-            preferences,
+            preferences, config,
             ..Default::default()
         }
     }
@@ -91,9 +91,10 @@ impl MicroModel for SlaveVideoModel {
                 if let Some(pipeline) = &self.pipeline {
                     let preferences = self.preferences.borrow();
                     let encoder = preferences.get_default_video_encoder();
+                    let colorspace_conversion = self.config.lock().unwrap().get_colorspace_conversion().clone();
                     let record_handle = match encoder {
                         Some(encoder) => {
-                            let elements = encoder.gst_record_elements(&pathbuf.to_str().unwrap());
+                            let elements = encoder.gst_record_elements(colorspace_conversion, &pathbuf.to_str().unwrap());
                             let elements_and_pad = elements.and_then(|elements| super::video::connect_elements_to_pipeline(pipeline, "tee_decoded", &elements).map(|pad| (elements, pad)));
                             elements_and_pad
                         },
@@ -136,7 +137,8 @@ impl MicroModel for SlaveVideoModel {
                 assert!(self.pipeline == None);
                 let video_port = self.get_config().lock().unwrap().get_video_port().clone();
                 let video_decoder = self.get_config().lock().unwrap().get_video_decoder().clone();
-                match super::video::create_pipeline(video_port, video_decoder) {
+                let colorspace_conversion = self.get_config().lock().unwrap().get_colorspace_conversion().clone();
+                match super::video::create_pipeline(video_port, colorspace_conversion, video_decoder) {
                     Ok(pipeline) => {
                         let sender = sender.clone();
                         let (mat_sender, mat_receiver) = MainContext::channel(glib::PRIORITY_DEFAULT);
@@ -193,7 +195,10 @@ impl MicroModel for SlaveVideoModel {
                 assert!(self.pixbuf != None);
                 if let Some(pixbuf) = &self.pixbuf {
                     let format = pathbuf.extension().unwrap().to_str().and_then(ImageFormat::from_extension).unwrap();
-                    pixbuf.savev(&pathbuf, &format.to_string().to_lowercase(), &[]).unwrap();
+                    match pixbuf.savev(&pathbuf, &format.to_string().to_lowercase(), &[]) {
+                        Ok(_) => send!(parent_sender, SlaveMsg::ShowToastMessage(format!("截图保存成功：{}", pathbuf.to_str().unwrap()))),
+                        Err(err) => send!(parent_sender, SlaveMsg::ShowToastMessage(format!("截图保存失败：{}", err.to_string()))),
+                    }
                 }
             },
             SlaveVideoMsg::RequestFrame => {

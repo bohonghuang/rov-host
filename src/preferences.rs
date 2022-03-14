@@ -28,7 +28,7 @@ use serde::{Serialize, Deserialize};
 use strum::IntoEnumIterator;
 use derivative::*;
 
-use crate::{AppModel, AppMsg, slave::video::{VideoEncoder, VideoDecoder, ImageFormat}};
+use crate::{AppModel, AppMsg, slave::video::{VideoEncoder, VideoDecoder, ImageFormat, ColorspaceConversion}};
 
 pub fn get_data_path() -> PathBuf {
     const APP_DIR_NAME: &str = "rovhost";
@@ -88,8 +88,9 @@ pub struct PreferencesModel {
     #[derivative(Default(value="true"))]
     pub default_keep_video_display_ratio: bool,
     pub default_video_decoder: VideoDecoder,
+    pub default_colorspace_conversion: ColorspaceConversion,
     #[derivative(Default(value="64"))]
-    pub param_tuner_graph_view_point_num_limit: u16,
+    pub default_param_tuner_graph_view_point_num_limit: u16,
 }
 
 impl PreferencesModel {
@@ -114,7 +115,8 @@ pub enum PreferencesMsg {
     SetInputSendingRate(u16),
     SetDefaultKeepVideoDisplayRatio(bool),
     SetDefaultVideoDecoder(VideoDecoder),
-    SetParameterTunerGraphViewPointNumberLimit(u16),
+    SetDefaultParameterTunerGraphViewPointNumberLimit(u16),
+    SetDefaultColorspaceConversion(ColorspaceConversion),
     SaveToFile,
     OpenVideoDirectory,
     OpenImageDirectory,
@@ -248,10 +250,10 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                     },
                 },
                 add = &PreferencesGroup {
-                    set_title: "拉流",
-                    set_description: Some("从下位机拉取视频流的选项"),
+                    set_title: "管道",
+                    set_description: Some("配置拉流以及录制所使用的管道"),
                     add = &ActionRow {
-                        set_title: "默认端口",
+                        set_title: "默认拉流端口",
                         set_subtitle: "拉取第一个机位的视频流使用的默认本地端口，其他机位的端口将在该基础上进行累加",
                         add_suffix = &SpinButton::with_range(0.0, 65535.0, 1.0) {
                             set_value: track!(model.changed(PreferencesModel::default_local_video_port()), model.default_local_video_port as f64),
@@ -261,6 +263,21 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                                 send!(sender, PreferencesMsg::SetDefaultLocalVideoPort(button.value() as u16));
                             }
                         },
+                    },
+                    add = &ComboRow {
+                        set_title: "默认色彩空间转换",
+                        set_subtitle: "设置视频编解码、视频流显示要求的色彩空间转换所使用的默认硬件",
+                        set_model: Some(&{
+                            let model = StringList::new(&[]);
+                            for value in ColorspaceConversion::iter() {
+                                model.append(&value.to_string());
+                            }
+                            model
+                        }),
+                        set_selected: track!(model.changed(PreferencesModel::default_colorspace_conversion()), ColorspaceConversion::iter().position(|x| x == model.default_colorspace_conversion).unwrap() as u32),
+                        connect_selected_notify(sender) => move |row| {
+                            send!(sender, PreferencesMsg::SetDefaultColorspaceConversion(ColorspaceConversion::iter().nth(row.selected() as usize).unwrap()));
+                        }
                     },
                     add = &ComboRow {
                         set_title: "默认解码器",
@@ -344,11 +361,11 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                         set_title: "可视化最大点数",
                         set_subtitle: "绘制控制环可视化图表时使用最多使用多少个点，这将影响最多能观测的历史数据。",
                         add_suffix = &SpinButton::with_range(1.0, 255.0, 1.0) {
-                            set_value: track!(model.changed(PreferencesModel::param_tuner_graph_view_point_num_limit()), model.param_tuner_graph_view_point_num_limit as f64),
+                            set_value: track!(model.changed(PreferencesModel::default_param_tuner_graph_view_point_num_limit()), model.default_param_tuner_graph_view_point_num_limit as f64),
                             set_digits: 0,
                             set_valign: Align::Center,
                             connect_value_changed(sender) => move |button| {
-                                send!(sender, PreferencesMsg::SetParameterTunerGraphViewPointNumberLimit(button.value() as u16));
+                                send!(sender, PreferencesMsg::SetDefaultParameterTunerGraphViewPointNumberLimit(button.value() as u16));
                             }
                         }
                     }
@@ -383,9 +400,10 @@ impl ComponentUpdate<AppModel> for PreferencesModel {
             PreferencesMsg::SaveToFile => serde_json::to_string_pretty(&self).ok().and_then(|json| fs::write(get_preference_path(), json).ok()).unwrap(),
             PreferencesMsg::SetImageSavePath(path) => self.set_image_save_path(path),
             PreferencesMsg::SetImageSaveFormat(format) => self.set_image_save_format(format),
-            PreferencesMsg::SetParameterTunerGraphViewPointNumberLimit(limit) => self.set_param_tuner_graph_view_point_num_limit(limit),
+            PreferencesMsg::SetDefaultParameterTunerGraphViewPointNumberLimit(limit) => self.set_default_param_tuner_graph_view_point_num_limit(limit),
             PreferencesMsg::OpenVideoDirectory => gtk::show_uri(None as Option<&PreferencesWindow>, glib::filename_to_uri(self.get_video_save_path().to_str().unwrap(), None).unwrap().as_str(), gdk::CURRENT_TIME),
             PreferencesMsg::OpenImageDirectory => gtk::show_uri(None as Option<&PreferencesWindow>, glib::filename_to_uri(self.get_image_save_path().to_str().unwrap(), None).unwrap().as_str(), gdk::CURRENT_TIME),
+            PreferencesMsg::SetDefaultColorspaceConversion(conversion) => self.set_default_colorspace_conversion(conversion),
         }
         send!(parent_sender, AppMsg::PreferencesUpdated(self.clone()));
     }

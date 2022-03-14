@@ -62,7 +62,7 @@ impl ImageFormat {
 
 #[derive(EnumIter, EnumToString, EnumFromString, PartialEq, Clone, Debug)]
 pub enum VideoAlgorithm {
-    CLAHE, Algorithm1, Algorithm2, Algorithm3, Algorithm4
+    CLAHE
 }
 
 #[derive(EnumIter, EnumFromString, PartialEq, Clone, Debug, Serialize, Deserialize, Copy)]
@@ -71,7 +71,7 @@ pub enum VideoEncoder {
 }
 
 impl VideoEncoder {
-    pub fn gst_record_elements(&self, filename: &str) -> Result<Vec<Element>, &'static str> {
+    pub fn gst_record_elements(&self, colorspace_conversion: ColorspaceConversion, filename: &str) -> Result<Vec<Element>, &'static str> {
         let mut elements = Vec::new();
         let queue_to_file = gst::ElementFactory::make("queue", None).map_err(|_| "Missing element: queue")?;
         elements.push(queue_to_file);
@@ -82,36 +82,31 @@ impl VideoEncoder {
                 elements.push(encoder);
             },
             VideoEncoder::H265Software => {
-                let videoconvert = gst::ElementFactory::make("videoconvert", None).map_err(|_| "Missing element: videoconvert")?;
-                elements.push(videoconvert);
+                elements.extend_from_slice(&colorspace_conversion.gst_elements()?);
                 let encoder = gst::ElementFactory::make("x265enc", None).map_err(|_| "Missing encdoer: x265enc")?;
                 elements.push(encoder);
                 let h265parse = gst::ElementFactory::make("h265parse", None).map_err(|_| "Missing encdoer: h265parse")?;
                 elements.push(h265parse);
             },
             VideoEncoder::VP9Software => {
-                let videoconvert = gst::ElementFactory::make("videoconvert", None).map_err(|_| "Missing element: videoconvert")?;
-                elements.push(videoconvert);
+                elements.extend_from_slice(&colorspace_conversion.gst_elements()?);
                 let encoder = gst::ElementFactory::make("vp9enc", None).map_err(|_| "Missing element: vp9enc")?;
                 elements.push(encoder);
             },
             VideoEncoder::H264HardwareNvidia => {
-                let videoconvert = gst::ElementFactory::make("videoconvert", None).map_err(|_| "Missing element: videoconvert")?;
-                elements.push(videoconvert);
+                elements.extend_from_slice(&colorspace_conversion.gst_elements()?);
                 let encoder = gst::ElementFactory::make("nvh264enc", None).map_err(|_| "Missing encdoer: nvh264enc")?;
                 elements.push(encoder);
             },
             VideoEncoder::H265HardwareNvidia => {
-                let videoconvert = gst::ElementFactory::make("videoconvert", None).map_err(|_| "Missing element: videoconvert")?;
-                elements.push(videoconvert);
+                elements.extend_from_slice(&colorspace_conversion.gst_elements()?);
                 let encoder = gst::ElementFactory::make("nvh265enc", None).map_err(|_| "Missing encdoer: nvh265enc")?;
                 elements.push(encoder);
                 let h265parse = gst::ElementFactory::make("h265parse", None).map_err(|_| "Missing element: h265parse")?;
                 elements.push(h265parse);
             },
             VideoEncoder::VP8Software => {
-                let videoconvert = gst::ElementFactory::make("videoconvert", None).map_err(|_| "Missing element: videoconvert")?;
-                elements.push(videoconvert);
+                elements.extend_from_slice(&colorspace_conversion.gst_elements()?);
                 let encoder = gst::ElementFactory::make("vp8enc", None).map_err(|_| "Missing encdoer: vp8enc")?;
                 elements.push(encoder);
             },
@@ -206,12 +201,34 @@ impl VideoDecoder {
     }
 }
 
+#[derive(EnumIter, EnumFromString, EnumToString, PartialEq, Clone, Debug, Serialize, Deserialize, Copy)]
+pub enum ColorspaceConversion {
+    CPU, CUDA
+}
+
+impl ColorspaceConversion {
+    fn gst_elements(&self) -> Result<Vec<Element>, &'static str> {
+        match self {
+            ColorspaceConversion::CPU => Ok(vec![gst::ElementFactory::make("videoconvert", None).map_err(|_| "Missing element: videoconvert")?]),
+            ColorspaceConversion::CUDA => Ok(vec![
+                gst::ElementFactory::make("cudaupload", None).map_err(|_| "Missing element: cudaupload")?,
+                gst::ElementFactory::make("cudaconvert", None).map_err(|_| "Missing element: cudaconvert")?,
+                gst::ElementFactory::make("cudadownload", None).map_err(|_| "Missing element: cudadownload")?,
+            ]),
+        }
+    }
+}
+
 impl Default for VideoEncoder {
     fn default() -> Self { Self::H264Software }
 }
 
 impl Default for VideoDecoder {
     fn default() -> Self { Self::H264Software }
+}
+
+impl Default for ColorspaceConversion {
+    fn default() -> Self { Self::CPU }
 }
 
 pub fn connect_elements_to_pipeline(pipeline: &Pipeline, tee_name: &str, elements: &[Element]) -> Result<(Element, Pad), &'static str> {
@@ -268,7 +285,7 @@ pub fn disconnect_elements_to_pipeline(pipeline: &Pipeline, (output_tee, teepad)
     Ok(future)
 }
 
-pub fn create_pipeline(port: u16, decoder: VideoDecoder) -> Result<gst::Pipeline, &'static str> {
+pub fn create_pipeline(port: u16, colorspace_converter: ColorspaceConversion, decoder: VideoDecoder) -> Result<gst::Pipeline, &'static str> {
     let pipeline = gst::Pipeline::new(None);
     let udpsrc = gst::ElementFactory::make("udpsrc", None).map_err(|_| "Missing element: udpsrc")?;
     let caps_src = gst::caps::Caps::from_str("application/x-rtp, media=(string)video").map_err(|_| "Cannot create capability for udpsrc")?;
@@ -281,10 +298,11 @@ pub fn create_pipeline(port: u16, decoder: VideoDecoder) -> Result<gst::Pipeline
     let tee_decoded = gst::ElementFactory::make("tee", Some("tee_decoded")).map_err(|_| "Missing element: tee")?;
     let queue_to_decode = gst::ElementFactory::make("queue", None).map_err(|_| "Missing element: queue")?;
     let queue_to_app = gst::ElementFactory::make("queue", None).map_err(|_| "Missing element: queue")?;
-    let videoconvert = gst::ElementFactory::make("videoconvert", None).map_err(|_| "Missing element: videoconvert")?;
+    let colorspace_conversion_elements = colorspace_converter.gst_elements()?;
     let (depay_elements, decoder_elements) = decoder.gst_main_elements()?;
     
-    pipeline.add_many(&[&udpsrc, &appsink, &tee_decoded, &tee_source, &videoconvert, &queue_to_app, &queue_to_decode]).map_err(|_| "Cannot create pipeline")?;
+    pipeline.add_many(&[&udpsrc, &appsink, &tee_decoded, &tee_source, &queue_to_app, &queue_to_decode]).map_err(|_| "Cannot create pipeline")?;
+    pipeline.add_many(&colorspace_conversion_elements.iter().collect::<Vec<_>>()).map_err(|_| "Cannot add colorspace conversion elements to pipeline")?;
     for depay_element in &depay_elements {
         pipeline.add(depay_element).map_err(|_| "Cannot add depay elements to pipeline")?;
     }
@@ -301,6 +319,11 @@ pub fn create_pipeline(port: u16, decoder: VideoDecoder) -> Result<gst::Pipeline
             a.link(b).map_err(|_| "Cannot link elements between decoder elements")?;
         }
     }
+    for element in colorspace_conversion_elements.windows(2) {
+        if let [a, b] = element {
+            a.link(b).map_err(|_| "Cannot link elements between colorspace conversion elements")?;
+        }
+    }
     match (depay_elements.first(), depay_elements.last()) {
         (Some(first), Some(last)) => {
             udpsrc.link(first).map_err(|_| "Cannot link udpsrc to the first depay element")?;
@@ -315,10 +338,15 @@ pub fn create_pipeline(port: u16, decoder: VideoDecoder) -> Result<gst::Pipeline
         },
         _ => return Err("Missing decoder element"),
     }
-    queue_to_app.link(&videoconvert).map_err(|_| "Cannot link the last decoder element to videoconvert")?;
+    match (colorspace_conversion_elements.first(), colorspace_conversion_elements.last()) {
+        (Some(first), Some(last)) => {
+            queue_to_app.link(first).map_err(|_| "Cannot link the last decoder element to first colorspace conversion element")?;
+            last.link(&appsink).map_err(|_| "Cannot link last colorspace conversion element to appsink")?;
+        },
+        _ => return Err("Missing decoder element"),
+    }
     queue_to_app.set_property_from_value("leaky", &EnumClass::new(queue_to_app.property_type("leaky").unwrap()).unwrap().to_value(2).unwrap());
     // appsink.set_property("sync", true);
-    videoconvert.link(&appsink).map_err(|_| "Cannot link videoconvert to appsink")?;
     tee_source.request_pad_simple("src_%u").unwrap().link(&queue_to_decode.static_pad("sink").unwrap()).map_err(|_| "Cannot link tee to decoder queue")?;
     tee_decoded.request_pad_simple("src_%u").unwrap().link(&queue_to_app.static_pad("sink").unwrap()).map_err(|_| "Cannot link tee to appsink queue")?;
     Ok(pipeline)

@@ -155,9 +155,9 @@ impl MicroWidgets<SlaveFirmwareUpdaterModel> for SlaveFirmwareUpdaterWidgets {
         window = Window {
             set_title: Some("固件更新向导"),
             set_width_request: 480,
-            set_height_request: 480, 
+            set_height_request: 480,
+            set_destroy_with_parent: true,
             set_modal: true,
-            set_visible: true,
             set_content = Some(&GtkBox) {
                 set_orientation: Orientation::Vertical,
                 append = &HeaderBar {

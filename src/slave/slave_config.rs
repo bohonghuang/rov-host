@@ -27,7 +27,7 @@ use relm4_macros::micro_widget;
 use strum::IntoEnumIterator;
 use derivative::*;
 
-use crate::{preferences::PreferencesModel, slave::video::VideoDecoder};
+use crate::{preferences::PreferencesModel, slave::video::{VideoDecoder, ColorspaceConversion}};
 use super::{SlaveMsg, video::VideoAlgorithm};
 
 #[tracker::track(pub)]
@@ -48,12 +48,13 @@ pub struct SlaveConfigModel {
     #[derivative(Default(value="PreferencesModel::default().default_keep_video_display_ratio"))]
     pub keep_video_display_ratio: bool,
     pub video_decoder: VideoDecoder,
+    pub colorspace_conversion: ColorspaceConversion,
 }
 
 impl SlaveConfigModel {
-    pub fn new(ip: Ipv4Addr, port: u16, video_port: u16, video_decoder: VideoDecoder) -> Self {
+    pub fn new(ip: Ipv4Addr, port: u16, video_port: u16, colorspace_conversion: ColorspaceConversion, video_decoder: VideoDecoder) -> Self {
         Self {
-            ip, port, video_port, video_decoder,
+            ip, port, video_port, video_decoder, colorspace_conversion,
             ..Default::default()
         }
     }
@@ -79,6 +80,7 @@ impl MicroModel for SlaveConfigModel {
                 }
             },
             SlaveConfigMsg::SetVideoDecoder(decoder) => self.set_video_decoder(decoder),
+            SlaveConfigMsg::SetColorspaceConversion(conversion) => self.set_colorspace_conversion(conversion),
         }
         send!(parent_sender, SlaveMsg::ConfigUpdated);
     }
@@ -99,6 +101,7 @@ pub enum SlaveConfigMsg {
     SetConnected(Option<bool>),
     SetVideoAlgorithm(Option<VideoAlgorithm>),
     SetVideoDecoder(VideoDecoder),
+    SetColorspaceConversion(ColorspaceConversion),
 }
 
 #[micro_widget(pub)]
@@ -111,7 +114,7 @@ impl MicroWidgets<SlaveConfigModel> for SlaveConfigWidgets {
                 set_orientation: Orientation::Horizontal,
             },
             append = &ScrolledWindow {
-                set_width_request: 300,
+                set_width_request: 320,
                 set_child = Some(&Viewport) {
                     set_child = Some(&GtkBox) {
                         set_spacing: 20,
@@ -183,10 +186,10 @@ impl MicroWidgets<SlaveConfigModel> for SlaveConfigWidgets {
                         },
                         append = &PreferencesGroup {
                             set_sensitive: track!(model.changed(SlaveConfigModel::polling()), model.get_polling().eq(&Some(false))),
-                            set_title: "拉流",
-                            set_description: Some("从下位机拉取视频流的选项"),
+                            set_title: "管道",
+                            set_description: Some("配置拉流以及录制所使用的管道"),
                             add = &ActionRow {
-                                set_title: "端口",
+                                set_title: "拉流端口",
                                 set_subtitle: "拉取视频流的本地端口",
                                 add_suffix = &SpinButton::with_range(0.0, 65535.0, 1.0) {
                                     set_value: track!(model.changed(SlaveConfigModel::video_port()), model.video_port as f64),
@@ -195,6 +198,21 @@ impl MicroWidgets<SlaveConfigModel> for SlaveConfigWidgets {
                                     connect_value_changed(sender) => move |button| {
                                         send!(sender, SlaveConfigMsg::SetVideoPort(button.value() as u16));
                                     }
+                                }
+                            },
+                            add = &ComboRow {
+                                set_title: "色彩空间转换",
+                                set_subtitle: "设置视频编解码、视频流显示要求的色彩空间转换所使用的硬件",
+                                set_model: Some(&{
+                                    let model = StringList::new(&[]);
+                                    for value in ColorspaceConversion::iter() {
+                                        model.append(&value.to_string());
+                                    }
+                                    model
+                                }),
+                                set_selected: track!(model.changed(SlaveConfigModel::colorspace_conversion()), ColorspaceConversion::iter().position(|x| x == model.colorspace_conversion).unwrap() as u32),
+                                connect_selected_notify(sender) => move |row| {
+                                    send!(sender, SlaveConfigMsg::SetColorspaceConversion(ColorspaceConversion::iter().nth(row.selected() as usize).unwrap()));
                                 }
                             },
                             add = &ComboRow {
@@ -211,7 +229,7 @@ impl MicroWidgets<SlaveConfigModel> for SlaveConfigWidgets {
                                 connect_selected_notify(sender) => move |row| {
                                     send!(sender, SlaveConfigMsg::SetVideoDecoder(VideoDecoder::iter().nth(row.selected() as usize).unwrap()));
                                 }
-                            }
+                            },
                         },
                     },
                 },

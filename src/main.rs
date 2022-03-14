@@ -62,7 +62,7 @@ impl Widgets<AboutModel, AppModel> for AboutWidgets {
             set_copyright: Some("© 2021-2022 集美大学水下智能创新实验室"),
             set_comments: Some("跨平台的水下机器人上位机程序"),
             set_logo_icon_name: Some("input-gaming"),
-            set_version: Some("1.0.0-RC4"),
+            set_version: Some("1.0.0-RC5"),
             set_license_type: License::Gpl30,
         }
     }
@@ -288,7 +288,7 @@ impl AppUpdate for AppModel {
                 let video_port = self.get_preferences().borrow().get_default_local_video_port().wrapping_add(index as u16);
                 let (input_event_sender, input_event_receiver) = MainContext::channel(PRIORITY_DEFAULT);
                 let (slave_event_sender, slave_event_receiver) = MainContext::channel(PRIORITY_DEFAULT);
-                let mut slave_config = SlaveConfigModel::new(Ipv4Addr::from(ip_octets), *self.get_preferences().borrow().get_default_slave_port(), video_port, *self.get_preferences().borrow().get_default_video_decoder());
+                let mut slave_config = SlaveConfigModel::new(Ipv4Addr::from(ip_octets), self.get_preferences().borrow().get_default_slave_port().clone(), video_port, self.get_preferences().borrow().get_default_colorspace_conversion().clone(), self.get_preferences().borrow().get_default_video_decoder().clone());
                 slave_config.set_keep_video_display_ratio(*self.get_preferences().borrow().get_default_keep_video_display_ratio());
                 let slave = SlaveModel::new(slave_config, self.get_preferences().clone(), &slave_event_sender, input_event_sender);
                 let component = MyComponent::new(slave, (sender.clone(), app_window));

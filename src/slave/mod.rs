@@ -28,7 +28,7 @@ use async_std::{net::TcpStream, prelude::*, task::{JoinHandle, self}};
 use glib::{PRIORITY_DEFAULT, Sender, WeakRef, DateTime, MainContext};
 use glib_macros::clone;
 use gtk::{prelude::*, Align, Box as GtkBox, Button, CenterBox, CheckButton, Frame, Grid, Image, Label, ListBox, MenuButton, Orientation, Overlay, Popover, Revealer, Switch, ToggleButton, Widget, Separator, PackType, Inhibit};
-use adw::{ApplicationWindow, ToastOverlay, Toast, Flap};
+use adw::{ApplicationWindow, ToastOverlay, Toast, Flap, FlapFoldPolicy};
 use relm4::{WidgetPlus, factory::{FactoryPrototype, FactoryVec, positions::GridPosition}, send, MicroWidgets, MicroModel, MicroComponent};
 use relm4_macros::micro_widget;
 
@@ -146,8 +146,8 @@ const JOYSTICK_DISPLAY_THRESHOLD: i16 = 500;
 impl SlaveModel {
     pub fn new(config: SlaveConfigModel, preferences: Rc<RefCell<PreferencesModel>>, component_sender: &Sender<SlaveMsg>, input_event_sender: Sender<InputSourceEvent>) -> Self {
         Self {
-            config: MyComponent::new(config, component_sender.clone()),
-            video: MyComponent::new(SlaveVideoModel::new(preferences.clone()), component_sender.clone()),
+            config: MyComponent::new(config.clone(), component_sender.clone()),
+            video: MyComponent::new(SlaveVideoModel::new(preferences.clone(), Arc::new(Mutex::new(config))), component_sender.clone()),
             preferences,
             input_event_sender,
             status: Arc::new(Mutex::new(HashMap::new())),
@@ -341,6 +341,7 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                 append = &Flap {
                     set_flap: Some(model.config.root_widget()),
                     set_reveal_flap: track!(model.changed(SlaveModel::config_presented()), *model.get_config_presented()),
+                    set_fold_policy: FlapFoldPolicy::Auto,
                     set_locked: true,
                     set_flap_position: PackType::End,
                     set_separator = Some(&Separator) {},
@@ -663,7 +664,7 @@ impl MicroModel for SlaveModel {
     type Msg = SlaveMsg;
     type Widgets = SlaveWidgets;
     type Data = (Sender<AppMsg>, WeakRef<ApplicationWindow>);
-    fn update(&mut self, msg: SlaveMsg, (parent_sender, window): &Self::Data, sender: Sender<SlaveMsg>) {
+    fn update(&mut self, msg: SlaveMsg, (parent_sender, app_window): &Self::Data, sender: Sender<SlaveMsg>) {
         self.reset();
         match msg {
             SlaveMsg::ConfigUpdated => {
@@ -751,22 +752,26 @@ impl MicroModel for SlaveModel {
                 match self.get_tcp_stream() {
                     Some(tcp_stream) => {
                         let component = MicroComponent::new(SlaveFirmwareUpdaterModel::new(Deref::deref(tcp_stream).clone()), sender.clone());
-                        component.root_widget().set_transient_for(Some(&window.upgrade().unwrap()));
+                        let window = component.root_widget();
+                        window.set_transient_for(app_window.upgrade().as_ref());
+                        window.set_visible(true);
                     },
                     None => {
-                        error_message("错误", "请确保下位机处于连接状态。", window.upgrade().as_ref());
+                        error_message("错误", "请确保下位机处于连接状态。", app_window.upgrade().as_ref());
                     },
                 }
             },
             SlaveMsg::OpenParameterTuner => {
                 match self.get_tcp_stream() {
                     Some(tcp_stream) => {
-                        let component = MicroComponent::new(SlaveParameterTunerModel::new(*self.preferences.borrow().get_param_tuner_graph_view_point_num_limit()), sender.clone());
-                        component.root_widget().set_transient_for(Some(&window.upgrade().unwrap()));
+                        let component = MicroComponent::new(SlaveParameterTunerModel::new(*self.preferences.borrow().get_default_param_tuner_graph_view_point_num_limit()), sender.clone());
+                        let window = component.root_widget();
+                        window.set_transient_for(app_window.upgrade().as_ref());
+                        window.set_visible(true);
                         send!(component.sender(), SlaveParameterTunerMsg::StartDebug(Deref::deref(tcp_stream).clone()));
                     },
                     None => {
-                        error_message("错误", "请确保下位机处于连接状态。", window.upgrade().as_ref());
+                        error_message("错误", "请确保下位机处于连接状态。", app_window.upgrade().as_ref());
                     },
                 }
             },
@@ -784,7 +789,7 @@ impl MicroModel for SlaveModel {
                 send!(parent_sender, AppMsg::DestroySlave(self as *const Self));
             },
             SlaveMsg::ErrorMessage(msg) => {
-                error_message("错误", &msg, window.upgrade().as_ref());
+                error_message("错误", &msg, app_window.upgrade().as_ref());
             },
             SlaveMsg::TcpError(msg) => {
                 send!(sender, SlaveMsg::ShowToastMessage(format!("下位机通讯错误：{}", msg)));

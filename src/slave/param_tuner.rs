@@ -420,7 +420,6 @@ impl SlaveParameterTunerModel {
 impl MicroWidgets<SlaveParameterTunerModel> for SlaveParameterTunerWidgets {
     view! {
         window = PreferencesWindow {
-            set_visible: true,
             set_destroy_with_parent: true,
             set_modal: true,
             set_search_enabled: false,
@@ -429,6 +428,7 @@ impl MicroWidgets<SlaveParameterTunerModel> for SlaveParameterTunerWidgets {
                 set_icon_name: Some("weather-windy-symbolic"),
                 set_hexpand: true,
                 set_vexpand: true,
+                set_can_focus: false,
                 add: group_propeller = &PreferencesGroup {
                     set_title: "推进器参数",
                     add = &FlowBox {
@@ -445,6 +445,7 @@ impl MicroWidgets<SlaveParameterTunerModel> for SlaveParameterTunerWidgets {
                 set_icon_name: Some("media-playlist-repeat-symbolic"),
                 set_hexpand: true,
                 set_vexpand: true,
+                set_can_focus: false,
                 add: group_pid = &PreferencesGroup {
                     set_title: "PID参数",
                     add = &FlowBox {
@@ -743,6 +744,7 @@ impl MicroModel for SlaveParameterTunerModel {
                         set_control_loop_parameters: ControlLoopModel::vec_to_map(self.control_loops.iter().collect()),
                     })).unwrap_or(());
                 }
+                // use rand::Rng;
                 // send!(sender, SlaveParameterTunerMsg::FeedbacksReceived(SlaveParameterTunerFeedbackPacket { feedbacks: SlaveParameterTunerFeedbackValuePacket { control_loops: [("depth_lock".to_string(), rand::thread_rng().gen_range(-100..=100) as f32 / 100.0)].into_iter().collect() } })); // Debug
             },
             SlaveParameterTunerMsg::StartDebug(tcp_stream) => {
