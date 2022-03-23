@@ -28,7 +28,7 @@ use relm4_macros::micro_widget;
 
 use derivative::*;
 
-use crate::{preferences::PreferencesModel, slave::video::{MatExt, ImageFormat}, async_glib::{Promise, Future}};
+use crate::{preferences::PreferencesModel, slave::video::{MatExt, ImageFormat, VideoSource}, async_glib::{Promise, Future}};
 use super::{slave_config::SlaveConfigModel, SlaveMsg};
 
 #[tracker::track(pub)]
@@ -136,34 +136,35 @@ impl MicroModel for SlaveVideoModel {
             SlaveVideoMsg::StartPipeline => {
                 assert!(self.pipeline == None);
                 let config = self.get_config().lock().unwrap();
-                let video_source = config.get_video_source().clone();
-                let video_port = if *config.get_specify_video_port() { Some(config.get_video_port().clone()) } else { None };
-                let video_address = if *config.get_specify_video_address() { Some(config.get_video_address().clone()) } else { None };
-                let video_decoder = config.get_video_decoder().clone();
-                let colorspace_conversion = config.get_colorspace_conversion().clone();
-                drop(config);   // 结束 &self 的生命周期
-                match super::video::create_pipeline(
-                    video_source,
-                    video_address,
-                    video_port,
-                    colorspace_conversion,
-                    video_decoder) {
-                    Ok(pipeline) => {
-                        let sender = sender.clone();
-                        let (mat_sender, mat_receiver) = MainContext::channel(glib::PRIORITY_DEFAULT);
-                        super::video::attach_pipeline_callback(&pipeline, mat_sender, self.get_config().clone()).unwrap();
-                        mat_receiver.attach(None, move |mat| {
-                            sender.send(SlaveVideoMsg::SetPixbuf(Some(mat.as_pixbuf()))).unwrap();
-                            Continue(true)
-                        });
-                        pipeline.set_state(gst::State::Playing).unwrap();
-                        self.set_pipeline(Some(pipeline));
-                        send!(parent_sender, SlaveMsg::PollingChanged(true));
-                    },
-                    Err(msg) => {
-                        send!(parent_sender, SlaveMsg::ErrorMessage(String::from(msg)));
-                        send!(parent_sender, SlaveMsg::PollingChanged(false));
-                    },
+                let video_url = config.get_video_url();
+                if let Some(video_source) = VideoSource::from_url(video_url) {
+                    let video_decoder = config.get_video_decoder().clone();
+                    let colorspace_conversion = config.get_colorspace_conversion().clone();
+                    drop(config);   // 结束 &self 的生命周期
+                    match super::video::create_pipeline(
+                        video_source,
+                        colorspace_conversion,
+                        video_decoder) {
+                        Ok(pipeline) => {
+                            let sender = sender.clone();
+                            let (mat_sender, mat_receiver) = MainContext::channel(glib::PRIORITY_DEFAULT);
+                            super::video::attach_pipeline_callback(&pipeline, mat_sender, self.get_config().clone()).unwrap();
+                            mat_receiver.attach(None, move |mat| {
+                                sender.send(SlaveVideoMsg::SetPixbuf(Some(mat.as_pixbuf()))).unwrap();
+                                Continue(true)
+                            });
+                            pipeline.set_state(gst::State::Playing).unwrap();
+                            self.set_pipeline(Some(pipeline));
+                            send!(parent_sender, SlaveMsg::PollingChanged(true));
+                        },
+                        Err(msg) => {
+                            send!(parent_sender, SlaveMsg::ErrorMessage(String::from(msg)));
+                            send!(parent_sender, SlaveMsg::PollingChanged(false));
+                        },
+                    }
+                } else {
+                    send!(parent_sender, SlaveMsg::ErrorMessage(String::from("拉流 URL 有误，请检查并修改后重试。")));
+                    send!(parent_sender, SlaveMsg::PollingChanged(false));
                 }
             },
             SlaveVideoMsg::StopPipeline => {
@@ -178,7 +179,7 @@ impl MicroModel for SlaveVideoModel {
                 let promise = Promise::new();
                 futures.push(promise.future());
                 let promise = Mutex::new(Some(promise));
-                if let Some(pipeline) = &self.pipeline {
+                if let Some(pipeline) = self.pipeline.take() {
                     let sinkpad = pipeline.by_name("display").unwrap().sink_pads().into_iter().next().unwrap();
                     pipeline.send_event(gst::event::Eos::new());
                     sinkpad.add_probe(gst::PadProbeType::EVENT_BOTH, move |_pad, info| {
@@ -192,11 +193,14 @@ impl MicroModel for SlaveVideoModel {
                         }
                         gst::PadProbeReturn::Remove
                     });
-                    if let Some(pipeline) = self.pipeline.take() {
+                    if pipeline.current_state() == gst::State::Playing {
                         Future::sequence(futures.into_iter()).for_each(clone!(@strong parent_sender => move |_| {
                             send!(parent_sender, SlaveMsg::PollingChanged(false));
                             pipeline.set_state(gst::State::Null).unwrap();
                         }));
+                    } else {
+                        send!(parent_sender, SlaveMsg::PollingChanged(false));
+                        pipeline.set_state(gst::State::Null).unwrap();
                     }
                 }
             },

@@ -50,6 +50,13 @@ impl<T> Future<T> where T: Send + Sync + 'static {
         }
     }
 
+    pub fn apply(t: T) -> Future<T> {
+        let promise = Promise::new();
+        let future = promise.future();
+        promise.success(t);
+        future
+    }
+
     pub fn sequence<I: Iterator<Item = Future<T>> + Send + 'static>(iter: I) -> Future<Vec<Arc<T>>> {
         let seq: Arc<Mutex<Option<Vec<Arc<T>>>>> = Arc::new(Mutex::new(Some(Vec::new())));
         let next: Arc<OnceCell<Box<dyn (Fn(I) -> Future<Vec<Arc<T>>>) + Send + Sync>>> = Default::default();

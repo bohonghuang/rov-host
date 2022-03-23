@@ -1,6 +1,6 @@
 [package]
 name = "rovhost-gtk"
-version = "1.0.0-RC5"
+version = "1.0.0-RC6"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -20,6 +20,7 @@ relm4-components = "0.4"
 relm4-macros = "0.4"
 gst = { package = "gstreamer", version = "0.18" }
 gst-app = { package = "gstreamer-app", version = "0.18" } # , features = ["v1_20"] }
+gst-rtsp = { package = "gstreamer-rtsp", version = "0.18" }
 opencv = "0.62"
 sdl2 = "0.35"
 sdl2-sys = "0.35"
@@ -37,3 +38,4 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 async-std = "1.10"
 md5 = "0.7"
+url = { version = "2", features = ["serde"] }

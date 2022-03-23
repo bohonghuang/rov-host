@@ -16,7 +16,7 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-use std::{ffi::c_void, str::FromStr, sync::{Arc, Mutex}, net::Ipv4Addr};
+use std::{str::FromStr, sync::{Arc, Mutex}, ffi::c_void};
 
 use glib::{Sender, clone, EnumClass};
 use gtk::prelude::*;
@@ -30,6 +30,7 @@ use cv::{prelude::*, Result, imgproc, core::Size};
 use serde::{Serialize, Deserialize};
 
 use strum_macros::{EnumIter, EnumString as EnumFromString, Display as EnumToString};
+use url::Url;
 
 use crate::async_glib::{Future, Promise};
 
@@ -60,14 +61,39 @@ impl ImageFormat {
     }
 }
 
-#[derive(EnumIter, EnumToString, EnumFromString, PartialEq, Clone, Debug, Serialize, Deserialize)]
 pub enum VideoSource {
-    UDP, RTSP
+    UDP(Url), RTSP(Url)
 }
 
-impl Default for VideoSource {
-    fn default() -> Self {
-        Self::UDP
+impl VideoSource {
+    pub fn from_url(url: &Url) -> Option<VideoSource> {
+        match url.scheme() {
+            "udp" => Some(Self::UDP(url.clone())),
+            "rtsp" => Some(Self::RTSP(url.clone())),
+            _ => None
+        }
+    }
+    
+    fn gst_element(&self) -> Result<Element, &'static str> {
+        match self {
+            VideoSource::UDP(url) => {
+                let udpsrc = gst::ElementFactory::make("udpsrc", None).map_err(|_| "Missing element: udpsrc")?;
+                if let Some(address) = url.host_str() {
+                    udpsrc.set_property("address", address.to_string());
+                }
+                if let Some(port) = url.port() {
+                    udpsrc.set_property("port", port as i32);
+                }
+                let caps_src = gst::caps::Caps::from_str("application/x-rtp, media=(string)video").map_err(|_| "Cannot create capability for udpsrc")?;
+                udpsrc.set_property("caps", caps_src);
+                Ok(udpsrc)
+            },
+            VideoSource::RTSP(url) => {
+                let rtspsrc = gst::ElementFactory::make("rtspsrc", None).map_err(|_| "Missing element: rtspsrc")?;
+                rtspsrc.set_property("location", url.to_string());
+                Ok(rtspsrc)
+            },
+        }
     }
 }
 
@@ -108,6 +134,8 @@ impl VideoEncoder {
                 elements.extend_from_slice(&colorspace_conversion.gst_elements()?);
                 let encoder = gst::ElementFactory::make("nvh264enc", None).map_err(|_| "Missing encdoer: nvh264enc")?;
                 elements.push(encoder);
+                let h264parse = gst::ElementFactory::make("h264parse", None).map_err(|_| "Missing element: h265parse")?;
+                elements.push(h264parse);
             },
             VideoEncoder::H265HardwareNvidia => {
                 elements.extend_from_slice(&colorspace_conversion.gst_elements()?);
@@ -229,7 +257,6 @@ impl ColorspaceConversion {
         }
     }
 }
-
 impl Default for VideoEncoder {
     fn default() -> Self { Self::H264Software }
 }
@@ -296,34 +323,9 @@ pub fn disconnect_elements_to_pipeline(pipeline: &Pipeline, (output_tee, teepad)
     Ok(future)
 }
 
-pub fn create_pipeline(source: VideoSource,address: Option<Ipv4Addr>, port: Option<u16>, colorspace_conversion: ColorspaceConversion, decoder: VideoDecoder) -> Result<gst::Pipeline, &'static str> {
+pub fn create_pipeline(source: VideoSource, colorspace_conversion: ColorspaceConversion, decoder: VideoDecoder) -> Result<gst::Pipeline, &'static str> {
     let pipeline = gst::Pipeline::new(None);
-    let video_src = match source {
-        VideoSource::UDP => {
-            let udpsrc = gst::ElementFactory::make("udpsrc", None).map_err(|_| "Missing element: udpsrc")?;
-            if let Some(address) = address {
-                udpsrc.set_property("address", address.to_string());
-            }
-            if let Some(port) = port {
-                udpsrc.set_property("port", port as i32);
-            }
-            let caps_src = gst::caps::Caps::from_str("application/x-rtp, media=(string)video").map_err(|_| "Cannot create capability for udpsrc")?;
-            udpsrc.set_property("caps", caps_src);
-            udpsrc
-        },
-        VideoSource::RTSP => {
-            let rtspsrc = gst::ElementFactory::make("udpsrc", None).map_err(|_| "Missing element: rtspsrc")?;
-            let mut location = address.unwrap_or(Ipv4Addr::LOCALHOST).to_string();
-            if let Some(port) = port {
-                if location.ends_with("/") {
-                    location.pop();
-                }
-                location.push_str(&port.to_string());
-            };
-            rtspsrc.set_property("location", location);
-            rtspsrc
-        },
-    };
+    let video_src = source.gst_element()?;
     let appsink = gst::ElementFactory::make("appsink", Some("display")).map_err(|_| "Missing element: appsink")?;
     let caps_app = gst::caps::Caps::from_str("video/x-raw, format=RGB").map_err(|_| "Cannot create capability for appsink")?;
     appsink.set_property("caps", caps_app);
@@ -359,8 +361,29 @@ pub fn create_pipeline(source: VideoSource,address: Option<Ipv4Addr>, port: Opti
     }
     match (depay_elements.first(), depay_elements.last()) {
         (Some(first), Some(last)) => {
-            video_src.link(first).map_err(|_| "Cannot link udpsrc to the first depay element")?;
-            last.link(&tee_source).map_err(|_| "Cannot link the last depay element to tee")?;
+            let first = first.clone();
+            if let Some(src) = video_src.static_pad("src") {
+                src.link(&first.static_pad("sink").unwrap()).map_err(|_| "Cannot link video source element to the first depay element").unwrap();
+            } else {
+                video_src.connect("pad-added", true, move |args| {
+                    if let [_element, pad] = args {
+                        let pad = pad.get::<Pad>().unwrap();
+                        let media = pad.caps().unwrap().iter().flat_map(|x| x.iter()).find_map(|(key, value)| {
+                            if key == "media" {
+                                Some(value.get::<String>().unwrap())
+                            } else {
+                                None
+                            }
+                        });
+                        
+                        if media.map_or(false, |x| x.eq("video")) {
+                            pad.link(&first.static_pad("sink").unwrap()).map_err(|_| "Cannot link video source element to the first depay element").unwrap();
+                        }
+                    }
+                    None
+                });
+            }
+            last.link(&tee_source).map_err(|_| "Cannot link the last depay element to tee").unwrap();
         },
         _ => return Err("Missing depay element"),
     }

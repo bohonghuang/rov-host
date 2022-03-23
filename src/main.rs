@@ -23,7 +23,7 @@ pub mod input;
 pub mod ui;
 pub mod async_glib;
 
-use std::{cell::RefCell, net::Ipv4Addr, rc::Rc, ops::Deref};
+use std::{cell::RefCell, net::Ipv4Addr, rc::Rc, ops::Deref, str::FromStr};
 
 use glib::{MainContext, clone, Sender, WeakRef, DateTime, PRIORITY_DEFAULT};
 use gtk::{AboutDialog, Align, Box as GtkBox, Grid, Image, Inhibit, Label, MenuButton, Orientation, Stack, prelude::*, Button, ToggleButton, Separator, License};
@@ -62,7 +62,7 @@ impl Widgets<AboutModel, AppModel> for AboutWidgets {
             set_copyright: Some("© 2021-2022 集美大学水下智能创新实验室"),
             set_comments: Some("跨平台的水下机器人上位机程序"),
             set_logo_icon_name: Some("input-gaming"),
-            set_version: Some("1.0.0-RC5"),
+            set_version: Some("1.0.0-RC6"),
             set_license_type: License::Gpl30,
         }
     }
@@ -280,15 +280,22 @@ impl AppUpdate for AppModel {
             },
             AppMsg::OpenKeybindingsWindow => todo!(),
             AppMsg::NewSlave(app_window) => {
-                let mut ip_octets = self.get_preferences().borrow().get_default_slave_address().octets();
                 let index = self.get_slaves().len() as u8;
-                ip_octets[3] = ip_octets[3].wrapping_add(index);
-                let video_port = self.get_preferences().borrow().get_default_video_port().wrapping_add(index as u16);
+                let mut slave_url: url::Url = self.get_preferences().borrow().get_default_slave_url().clone();
+                if let Some(ip) = slave_url.host_str().and_then(|str| Ipv4Addr::from_str(str).ok()) {
+                    let mut ip_octets = ip.octets();
+                    ip_octets[3] = ip_octets[3].wrapping_add(index);
+                    slave_url.set_host(Some(Ipv4Addr::from(ip_octets).to_string().as_str())).unwrap_or_default();
+                }
+                let mut video_url = self.get_preferences().borrow().get_default_video_url().clone();
+                if let Some(port) = video_url.port() {
+                    video_url.set_port(Some(port.wrapping_add(index as u16))).unwrap();
+                }
                 let (input_event_sender, input_event_receiver) = MainContext::channel(PRIORITY_DEFAULT);
                 let (slave_event_sender, slave_event_receiver) = MainContext::channel(PRIORITY_DEFAULT);
-                let mut slave_config = SlaveConfigModel::new(
-                    Ipv4Addr::from(ip_octets),
-                    video_port);
+                let mut slave_config = SlaveConfigModel::from_preferences(&self.preferences.borrow());
+                slave_config.set_slave_url(slave_url);
+                slave_config.set_video_url(video_url);
                 slave_config.set_keep_video_display_ratio(*self.get_preferences().borrow().get_default_keep_video_display_ratio());
                 let slave = SlaveModel::new(slave_config, self.get_preferences().clone(), &slave_event_sender, input_event_sender);
                 let component = MyComponent::new(slave, (sender.clone(), app_window));

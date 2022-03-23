@@ -16,19 +16,20 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-use std::{net::Ipv4Addr, str::FromStr, fmt::Debug};
+use std::{str::FromStr, fmt::Debug};
 
 use glib::Sender;
-use gtk::{Align, Box as GtkBox, Entry, Inhibit, Orientation, ScrolledWindow, Separator, SpinButton, StringList, Switch, Viewport, prelude::*};
-use adw::{ActionRow, PreferencesGroup, prelude::*, ComboRow, ExpanderRow};
+use gtk::{Align, Box as GtkBox, Entry, Inhibit, Orientation, ScrolledWindow, Separator, StringList, Switch, Viewport, prelude::*};
+use adw::{ActionRow, PreferencesGroup, prelude::*, ComboRow};
 use relm4::{WidgetPlus, send, MicroModel, MicroWidgets};
 use relm4_macros::micro_widget;
 
 use strum::IntoEnumIterator;
 use derivative::*;
+use url::Url;
 
 use crate::{preferences::PreferencesModel, slave::video::{VideoDecoder, ColorspaceConversion}};
-use super::{SlaveMsg, video::{VideoAlgorithm, VideoSource}};
+use super::{SlaveMsg, video::VideoAlgorithm};
 
 #[tracker::track(pub)]
 #[derive(Debug, Derivative, PartialEq, Clone)]
@@ -38,19 +39,10 @@ pub struct SlaveConfigModel {
     polling: Option<bool>,
     #[derivative(Default(value="Some(false)"))]
     connected: Option<bool>,
-    #[derivative(Default(value="PreferencesModel::default().default_slave_address"))]
-    pub ip: Ipv4Addr,
-    #[derivative(Default(value="PreferencesModel::default().default_slave_port"))]
-    pub port: u16,
-    #[derivative(Default(value="PreferencesModel::default().default_specify_video_address"))]
-    pub specify_video_address: bool,
-    #[derivative(Default(value="PreferencesModel::default().default_video_address"))]
-    pub video_address: Ipv4Addr,
-    #[derivative(Default(value="PreferencesModel::default().default_specify_video_port"))]
-    pub specify_video_port: bool,
-    #[derivative(Default(value="PreferencesModel::default().default_video_port"))]
-    pub video_port: u16,
-    
+    #[derivative(Default(value="PreferencesModel::default().default_slave_url"))]
+    pub slave_url: Url,
+    #[derivative(Default(value="PreferencesModel::default().default_video_url"))]
+    pub video_url: Url,
     pub video_algorithms: Vec<VideoAlgorithm>,
     #[derivative(Default(value="PreferencesModel::default().default_keep_video_display_ratio"))]
     pub keep_video_display_ratio: bool,
@@ -58,14 +50,23 @@ pub struct SlaveConfigModel {
     pub video_decoder: VideoDecoder,
     #[derivative(Default(value="PreferencesModel::default().default_colorspace_conversion"))]
     pub colorspace_conversion: ColorspaceConversion,
-    #[derivative(Default(value="PreferencesModel::default().default_video_source"))]
-    pub video_source: VideoSource,
 }
 
 impl SlaveConfigModel {
-    pub fn new(ip: Ipv4Addr, video_port: u16) -> Self {
+    pub fn new(slave_url: Url, video_url: Url) -> Self {
         Self {
-            ip, video_port, 
+            slave_url, video_url, 
+            ..Default::default()
+        }
+    }
+
+    pub fn from_preferences(preferences: &PreferencesModel) -> Self {
+        Self {
+            slave_url: preferences.get_default_slave_url().clone(),
+            video_url: preferences.get_default_video_url().clone(),
+            colorspace_conversion: preferences.get_default_colorspace_conversion().clone(),
+            video_decoder: preferences.get_default_video_decoder().clone(),
+            keep_video_display_ratio: preferences.get_default_keep_video_display_ratio().clone(),
             ..Default::default()
         }
     }
@@ -78,9 +79,6 @@ impl MicroModel for SlaveConfigModel {
     fn update(&mut self, msg: SlaveConfigMsg, parent_sender: &Sender<SlaveMsg>, _sender: Sender<SlaveConfigMsg>) {
         self.reset();
         match msg {
-            SlaveConfigMsg::SetIp(ip) => self.set_ip(ip),
-            SlaveConfigMsg::SetPort(port) => self.set_port(port),
-            SlaveConfigMsg::SetVideoPort(port) => self.set_video_port(port),
             SlaveConfigMsg::SetKeepVideoDisplayRatio(value) => self.set_keep_video_display_ratio(value),
             SlaveConfigMsg::SetPolling(polling) => self.set_polling(polling),
             SlaveConfigMsg::SetConnected(connected) => self.set_connected(connected),
@@ -92,10 +90,8 @@ impl MicroModel for SlaveConfigModel {
             },
             SlaveConfigMsg::SetVideoDecoder(decoder) => self.set_video_decoder(decoder),
             SlaveConfigMsg::SetColorspaceConversion(conversion) => self.set_colorspace_conversion(conversion),
-            SlaveConfigMsg::SetSpecifyVideoPort(specify) => self.set_specify_video_port(specify),
-            SlaveConfigMsg::SetSpecifyVideoAddress(specify) => self.set_specify_video_address(specify),
-            SlaveConfigMsg::SetVideoAddress(addr) => self.set_video_address(addr),
-            SlaveConfigMsg::SetVideoSource(source) => self.set_video_source(source),
+            SlaveConfigMsg::SetVideoUrl(url) => self.video_url = url,
+            SlaveConfigMsg::SetSlaveUrl(url) => self.slave_url = url,
         }
         send!(parent_sender, SlaveMsg::ConfigUpdated);
     }
@@ -108,19 +104,14 @@ impl std::fmt::Debug for SlaveConfigWidgets {
 }
 
 pub enum SlaveConfigMsg {
-    SetIp(Ipv4Addr),
-    SetPort(u16),
-    SetSpecifyVideoPort(bool),
-    SetVideoPort(u16),
-    SetSpecifyVideoAddress(bool),
-    SetVideoAddress(Ipv4Addr),
+    SetVideoUrl(Url),
+    SetSlaveUrl(Url),
     SetKeepVideoDisplayRatio(bool),
     SetPolling(Option<bool>),
     SetConnected(Option<bool>),
     SetVideoAlgorithm(Option<VideoAlgorithm>),
     SetVideoDecoder(VideoDecoder),
     SetColorspaceConversion(ColorspaceConversion),
-    SetVideoSource(VideoSource),
 }
 
 #[micro_widget(pub)]
@@ -144,28 +135,16 @@ impl MicroWidgets<SlaveConfigModel> for SlaveConfigWidgets {
                             set_title: "通讯",
                             set_description: Some("设置下位机的通讯选项"),
                             add = &ActionRow {
-                                set_title: "地址",
-                                set_subtitle: "下位机的内网地址",
+                                set_title: "连接 URL",
+                                set_subtitle: "连接下位机使用的 URL",
                                 add_suffix = &Entry {
-                                    set_text: model.ip.to_string().as_str(), //track!(model.changed(SlaveConfigModel::ip()), model.ip.to_string().as_str()),
+                                    set_text: model.get_slave_url().to_string().as_str(),
+                                    set_width_request: 160,
                                     set_valign: Align::Center,
                                     connect_changed(sender) => move |entry| {
-                                        match Ipv4Addr::from_str(&entry.text()) {
-                                            Ok(addr) => send!(sender, SlaveConfigMsg::SetIp(addr)),
-                                            Err(_) => (),
+                                        if let Ok(url) = Url::from_str(&entry.text()) {
+                                            send!(sender, SlaveConfigMsg::SetSlaveUrl(url));
                                         }
-                                    }
-                                },
-                            },
-                            add = &ActionRow {
-                                set_title: "端口",
-                                set_subtitle: "下位机的通讯端口",
-                                add_suffix = &SpinButton::with_range(0.0, 65535.0, 1.0) {
-                                    set_value: track!(model.changed(SlaveConfigModel::port()), model.port as f64),
-                                    set_digits: 0,
-                                    set_valign: Align::Center,
-                                    connect_value_changed(sender) => move |button| {
-                                        send!(sender, SlaveConfigMsg::SetPort(button.value() as u16));
                                     }
                                 },
                             },
@@ -207,63 +186,18 @@ impl MicroWidgets<SlaveConfigModel> for SlaveConfigWidgets {
                             set_sensitive: track!(model.changed(SlaveConfigModel::polling()), model.get_polling().eq(&Some(false))),
                             set_title: "管道",
                             set_description: Some("配置拉流以及录制所使用的管道"),
-                            add = &ComboRow {
-                                set_title: "默认拉流方式",
-                                set_subtitle: "默认使用的拉流方式",
-                                set_model: Some(&{
-                                    let model = StringList::new(&[]);
-                                    for value in VideoSource::iter() {
-                                        model.append(&value.to_string());
+                            add = &ActionRow {
+                                set_title: "拉流 URL",
+                                set_subtitle: "拉取视频流使用的 URL",
+                                add_suffix = &Entry {
+                                    set_text: track!(model.changed(SlaveConfigModel::video_url()), model.get_video_url().to_string().as_str()),
+                                    set_valign: Align::Center,
+                                    set_width_request: 160,
+                                    connect_changed(sender) => move |entry| {
+                                        if let Ok(url) = Url::from_str(&entry.text()) {
+                                            send!(sender, SlaveConfigMsg::SetVideoUrl(url));
+                                        }
                                     }
-                                    model
-                                }),
-                                set_selected: track!(model.changed(SlaveConfigModel::video_source()), VideoSource::iter().position(|x| x == model.video_source).unwrap() as u32),
-                                connect_selected_notify(sender) => move |row| {
-                                    send!(sender, SlaveConfigMsg::SetVideoSource(VideoSource::iter().nth(row.selected() as usize).unwrap()))
-                                }
-                            },
-                            add = &ExpanderRow {
-                                set_title: "指定拉流地址",
-                                set_show_enable_switch: true,
-                                set_expanded: *model.get_specify_video_port(),
-                                set_enable_expansion: track!(model.changed(SlaveConfigModel::specify_video_address()), *model.get_specify_video_address()),
-                                connect_enable_expansion_notify(sender) => move |expander| {
-                                    send!(sender, SlaveConfigMsg::SetSpecifyVideoAddress(expander.enables_expansion()));
-                                },
-                                add_row = &ActionRow {
-                                    set_title: "拉流地址",
-                                    set_subtitle: "拉取第一个机位的视频流使用的地址",
-                                    add_suffix = &Entry {
-                                        set_text: track!(model.changed(SlaveConfigModel::video_address()), model.get_video_address().to_string().as_str()),
-                                        set_valign: Align::Center,
-                                        connect_changed(sender) => move |entry| {
-                                            match Ipv4Addr::from_str(&entry.text()) {
-                                                Ok(addr) => send!(sender, SlaveConfigMsg::SetVideoAddress(addr)),
-                                                Err(_) => (),
-                                            }
-                                        }
-                                    },
-                                },
-                            },
-                            add = &ExpanderRow {
-                                set_title: "指定拉流端口",
-                                set_show_enable_switch: true,
-                                set_expanded: *model.get_specify_video_port(),
-                                set_enable_expansion: track!(model.changed(SlaveConfigModel::specify_video_port()), *model.get_specify_video_port()),
-                                connect_enable_expansion_notify(sender) => move |expander| {
-                                    send!(sender, SlaveConfigMsg::SetSpecifyVideoPort(expander.enables_expansion()));
-                                },
-                                add_row = &ActionRow {
-                                    set_title: "拉流端口",
-                                    set_subtitle: "拉取第一个机位的视频流使用的本地端口，其他机位的端口将在该基础上进行累加",
-                                    add_suffix = &SpinButton::with_range(0.0, 65535.0, 1.0) {
-                                        set_value: track!(model.changed(SlaveConfigModel::video_port()), model.video_port as f64),
-                                        set_digits: 0,
-                                        set_valign: Align::Center,
-                                        connect_value_changed(sender) => move |button| {
-                                            send!(sender, SlaveConfigMsg::SetVideoPort(button.value() as u16));
-                                        }
-                                    },
                                 },
                             },
                             add = &ComboRow {

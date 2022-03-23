@@ -263,7 +263,7 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                         set_halign: Align::Center,
                         set_spacing: 5,
                         append = &Label {
-                            set_text: track!(model.changed(SlaveModel::config()), format!("{}:{}", model.config.model().get_ip(), model.config.model().get_port()).as_str()),
+                            set_text: track!(model.changed(SlaveModel::config()), model.config.model().get_slave_url().to_string().as_str()),
                         },
                         append = &MenuButton {
                             set_icon_name: "input-gaming-symbolic",
@@ -682,22 +682,25 @@ impl MicroModel for SlaveModel {
                         });
                     },
                     Some(false) => { // 连接
-                        self.set_connected(None);
-                        self.config.send(SlaveConfigMsg::SetConnected(None)).unwrap();
-                        let (tcp_sender, tcp_receiver) = async_std::channel::bounded::<SlaveTcpMsg>(128);
-                        self.set_tcp_msg_sender(Some(tcp_sender.clone()));
-                        let sender = sender.clone();
-                        let control_sending_rate = *self.preferences.borrow().get_default_input_sending_rate();
-                        let ip = *self.config.model().get_ip();
-                        let port = *self.config.model().get_port();
-                        async_std::task::spawn(async move {
-                            match TcpStream::connect(format!("{}:{}", ip, port)).await.map(|x| async_std::sync::Arc::new(x)) {
-                                Ok(tcp_stream) => {
-                                    tcp_main_handler(control_sending_rate, tcp_stream.clone(), tcp_sender, tcp_receiver, sender.clone()).await.unwrap_or_default();
-                                },
-                                Err(err) => send!(sender, SlaveMsg::TcpError(err.to_string())),
-                            }
-                        });
+                        let url = self.config.model().get_slave_url().clone();
+                        if let ("tcp", Some(host), Some(port)) = (url.scheme(), url.host_str().map(ToString::to_string), url.port()) {
+                            let (tcp_sender, tcp_receiver) = async_std::channel::bounded::<SlaveTcpMsg>(128);
+                            self.set_tcp_msg_sender(Some(tcp_sender.clone()));
+                            let sender = sender.clone();
+                            let control_sending_rate = *self.preferences.borrow().get_default_input_sending_rate();
+                            self.set_connected(None);
+                            self.config.send(SlaveConfigMsg::SetConnected(None)).unwrap();
+                            async_std::task::spawn(async move {
+                                match TcpStream::connect(format!("{}:{}", host, port)).await.map(|x| async_std::sync::Arc::new(x)) {
+                                    Ok(tcp_stream) => {
+                                        tcp_main_handler(control_sending_rate, tcp_stream.clone(), tcp_sender, tcp_receiver, sender.clone()).await.unwrap_or_default();
+                                    },
+                                    Err(err) => send!(sender, SlaveMsg::TcpError(err.to_string())),
+                                }
+                            });
+                        } else {
+                            error_message("错误", "连接 URL 有误，请检查并修改后重试 。", app_window.upgrade().as_ref());
+                        }
                     },
                     None => (),
                 }
