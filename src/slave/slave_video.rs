@@ -135,10 +135,19 @@ impl MicroModel for SlaveVideoModel {
             },
             SlaveVideoMsg::StartPipeline => {
                 assert!(self.pipeline == None);
-                let video_port = self.get_config().lock().unwrap().get_video_port().clone();
-                let video_decoder = self.get_config().lock().unwrap().get_video_decoder().clone();
-                let colorspace_conversion = self.get_config().lock().unwrap().get_colorspace_conversion().clone();
-                match super::video::create_pipeline(video_port, colorspace_conversion, video_decoder) {
+                let config = self.get_config().lock().unwrap();
+                let video_source = config.get_video_source().clone();
+                let video_port = if *config.get_specify_video_port() { Some(config.get_video_port().clone()) } else { None };
+                let video_address = if *config.get_specify_video_address() { Some(config.get_video_address().clone()) } else { None };
+                let video_decoder = config.get_video_decoder().clone();
+                let colorspace_conversion = config.get_colorspace_conversion().clone();
+                drop(config);   // 结束 &self 的生命周期
+                match super::video::create_pipeline(
+                    video_source,
+                    video_address,
+                    video_port,
+                    colorspace_conversion,
+                    video_decoder) {
                     Ok(pipeline) => {
                         let sender = sender.clone();
                         let (mat_sender, mat_receiver) = MainContext::channel(glib::PRIORITY_DEFAULT);

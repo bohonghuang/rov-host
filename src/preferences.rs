@@ -20,7 +20,7 @@ use std::{fs, net::Ipv4Addr, path::PathBuf, str::FromStr};
 
 use glib::Sender;
 use gtk::{Align, Entry, Inhibit, Label, SpinButton, StringList, Switch, prelude::*};
-use adw::{PreferencesGroup, PreferencesPage, PreferencesWindow, prelude::*, ComboRow, ActionRow};
+use adw::{PreferencesGroup, PreferencesPage, PreferencesWindow, prelude::*, ComboRow, ActionRow, ExpanderRow};
 use relm4::{ComponentUpdate, Model, Widgets, send};
 use relm4_macros::widget;
 
@@ -28,7 +28,7 @@ use serde::{Serialize, Deserialize};
 use strum::IntoEnumIterator;
 use derivative::*;
 
-use crate::{AppModel, AppMsg, slave::video::{VideoEncoder, VideoDecoder, ImageFormat, ColorspaceConversion}};
+use crate::{AppModel, AppMsg, slave::video::{VideoEncoder, VideoDecoder, ImageFormat, ColorspaceConversion, VideoSource}};
 
 pub fn get_data_path() -> PathBuf {
     const APP_DIR_NAME: &str = "rovhost";
@@ -78,11 +78,18 @@ pub struct PreferencesModel {
     pub image_save_format: ImageFormat,
     pub default_video_encoder: Option<VideoEncoder>,
     #[derivative(Default(value="Ipv4Addr::new(192, 168, 137, 219)"))]
-    pub default_slave_ipv4_address: Ipv4Addr,
+    pub default_slave_address: Ipv4Addr,
     #[derivative(Default(value="8888"))]
     pub default_slave_port: u16,
+    pub default_video_source: VideoSource,
+    #[derivative(Default(value="false"))]
+    pub default_specify_video_address: bool,
+    #[derivative(Default(value="Ipv4Addr::new(127, 0, 0, 1)"))]
+    pub default_video_address: Ipv4Addr,
+    #[derivative(Default(value="true"))]
+    pub default_specify_video_port: bool,
     #[derivative(Default(value="5600"))]
-    pub default_local_video_port: u16,
+    pub default_video_port: u16,
     #[derivative(Default(value="60"))]
     pub default_input_sending_rate: u16,
     #[derivative(Default(value="true"))]
@@ -108,7 +115,7 @@ pub enum PreferencesMsg {
     SetImageSavePath(PathBuf),
     SetImageSaveFormat(ImageFormat),
     SetVideoEncoder(Option<VideoEncoder>),
-    SetSlaveDefaultIpv4Address(Ipv4Addr),
+    SetSlaveDefaultAddress(Ipv4Addr),
     SetSlaveDefaultPort(u16),
     SetInitialSlaveNum(u8),
     SetDefaultLocalVideoPort(u16),
@@ -117,6 +124,10 @@ pub enum PreferencesMsg {
     SetDefaultVideoDecoder(VideoDecoder),
     SetDefaultParameterTunerGraphViewPointNumberLimit(u16),
     SetDefaultColorspaceConversion(ColorspaceConversion),
+    SetDefaultSpecifyVideoPort(bool),
+    SetDefaultSpecifyVideoAddress(bool),
+    SetDefaultVideoAddress(Ipv4Addr),
+    SetDefaultVideoSource(VideoSource),
     SaveToFile,
     OpenVideoDirectory,
     OpenImageDirectory,
@@ -172,11 +183,11 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                         set_title: "默认地址",
                         set_subtitle: "第一机位的机器人使用的默认IPV4地址",
                         add_suffix = &Entry {
-                            set_text: track!(model.changed(PreferencesModel::default_slave_ipv4_address()), model.get_default_slave_ipv4_address().to_string().as_str()),
+                            set_text: track!(model.changed(PreferencesModel::default_slave_address()), model.get_default_slave_address().to_string().as_str()),
                             set_valign: Align::Center,
                             connect_changed(sender) => move |entry| {
                                 match Ipv4Addr::from_str(&entry.text()) {
-                                    Ok(addr) => send!(sender, PreferencesMsg::SetSlaveDefaultIpv4Address(addr)),
+                                    Ok(addr) => send!(sender, PreferencesMsg::SetSlaveDefaultAddress(addr)),
                                     Err(_) => (),
                                 }
                             }
@@ -252,16 +263,63 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                 add = &PreferencesGroup {
                     set_title: "管道",
                     set_description: Some("配置拉流以及录制所使用的管道"),
-                    add = &ActionRow {
-                        set_title: "默认拉流端口",
-                        set_subtitle: "拉取第一个机位的视频流使用的默认本地端口，其他机位的端口将在该基础上进行累加",
-                        add_suffix = &SpinButton::with_range(0.0, 65535.0, 1.0) {
-                            set_value: track!(model.changed(PreferencesModel::default_local_video_port()), model.default_local_video_port as f64),
-                            set_digits: 0,
-                            set_valign: Align::Center,
-                            connect_value_changed(sender) => move |button| {
-                                send!(sender, PreferencesMsg::SetDefaultLocalVideoPort(button.value() as u16));
+                    add = &ComboRow {
+                        set_title: "默认拉流方式",
+                        set_subtitle: "默认使用的拉流方式",
+                        set_model: Some(&{
+                            let model = StringList::new(&[]);
+                            for value in VideoSource::iter() {
+                                model.append(&value.to_string());
                             }
+                            model
+                        }),
+                        set_selected: track!(model.changed(PreferencesModel::default_video_source()), VideoSource::iter().position(|x| x == model.default_video_source).unwrap() as u32),
+                        connect_selected_notify(sender) => move |row| {
+                            send!(sender, PreferencesMsg::SetDefaultVideoSource(VideoSource::iter().nth(row.selected() as usize).unwrap()))
+                        }
+                    },
+                    add = &ExpanderRow {
+                        set_title: "默认指定拉流地址",
+                        set_show_enable_switch: true,
+                        set_expanded: *model.get_default_specify_video_port(),
+                        set_enable_expansion: track!(model.changed(PreferencesModel::default_specify_video_address()), *model.get_default_specify_video_address()),
+                        connect_enable_expansion_notify(sender) => move |expander| {
+                            send!(sender, PreferencesMsg::SetDefaultSpecifyVideoAddress(expander.enables_expansion()));
+                        },
+                        add_row = &ActionRow {
+                            set_title: "默认拉流地址",
+                            set_subtitle: "拉取第一个机位的视频流使用的默认地址",
+                            add_suffix = &Entry {
+                                set_text: track!(model.changed(PreferencesModel::default_video_address()), model.get_default_video_address().to_string().as_str()),
+                                set_valign: Align::Center,
+                                connect_changed(sender) => move |entry| {
+                                    match Ipv4Addr::from_str(&entry.text()) {
+                                        Ok(addr) => send!(sender, PreferencesMsg::SetDefaultVideoAddress(addr)),
+                                        Err(_) => (),
+                                    }
+                                }
+                            },
+                        },
+                    },
+                    add = &ExpanderRow {
+                        set_title: "默认指定拉流端口",
+                        set_show_enable_switch: true,
+                        set_expanded: *model.get_default_specify_video_port(),
+                        set_enable_expansion: track!(model.changed(PreferencesModel::default_specify_video_port()), *model.get_default_specify_video_port()),
+                        connect_enable_expansion_notify(sender) => move |expander| {
+                            send!(sender, PreferencesMsg::SetDefaultSpecifyVideoPort(expander.enables_expansion()));
+                        },
+                        add_row = &ActionRow {
+                            set_title: "默认拉流端口",
+                            set_subtitle: "拉取第一个机位的视频流使用的默认本地端口，其他机位的端口将在该基础上进行累加",
+                            add_suffix = &SpinButton::with_range(0.0, 65535.0, 1.0) {
+                                set_value: track!(model.changed(PreferencesModel::default_video_port()), model.default_video_port as f64),
+                                set_digits: 0,
+                                set_valign: Align::Center,
+                                connect_value_changed(sender) => move |button| {
+                                    send!(sender, PreferencesMsg::SetDefaultLocalVideoPort(button.value() as u16));
+                                }
+                            },
                         },
                     },
                     add = &ComboRow {
@@ -390,10 +448,10 @@ impl ComponentUpdate<AppModel> for PreferencesModel {
         match msg {
             PreferencesMsg::SetVideoSavePath(path) => self.set_video_save_path(path),
             PreferencesMsg::SetVideoEncoder(encoder) => self.set_default_video_encoder(encoder),
-            PreferencesMsg::SetSlaveDefaultIpv4Address(address) => self.set_default_slave_ipv4_address(address),
+            PreferencesMsg::SetSlaveDefaultAddress(address) => self.set_default_slave_address(address),
             PreferencesMsg::SetSlaveDefaultPort(port) => self.set_default_slave_port(port),
             PreferencesMsg::SetInitialSlaveNum(num) => self.set_initial_slave_num(num),
-            PreferencesMsg::SetDefaultLocalVideoPort(port) => self.set_default_local_video_port(port),
+            PreferencesMsg::SetDefaultLocalVideoPort(port) => self.set_default_video_port(port),
             PreferencesMsg::SetInputSendingRate(rate) => self.set_default_input_sending_rate(rate),
             PreferencesMsg::SetDefaultKeepVideoDisplayRatio(value) => self.set_default_keep_video_display_ratio(value),
             PreferencesMsg::SetDefaultVideoDecoder(decoder) => self.set_default_video_decoder(decoder),
@@ -404,6 +462,10 @@ impl ComponentUpdate<AppModel> for PreferencesModel {
             PreferencesMsg::OpenVideoDirectory => gtk::show_uri(None as Option<&PreferencesWindow>, glib::filename_to_uri(self.get_video_save_path().to_str().unwrap(), None).unwrap().as_str(), gdk::CURRENT_TIME),
             PreferencesMsg::OpenImageDirectory => gtk::show_uri(None as Option<&PreferencesWindow>, glib::filename_to_uri(self.get_image_save_path().to_str().unwrap(), None).unwrap().as_str(), gdk::CURRENT_TIME),
             PreferencesMsg::SetDefaultColorspaceConversion(conversion) => self.set_default_colorspace_conversion(conversion),
+            PreferencesMsg::SetDefaultSpecifyVideoPort(specify) => self.set_default_specify_video_port(specify),
+            PreferencesMsg::SetDefaultSpecifyVideoAddress(specify) => self.set_default_specify_video_address(specify),
+            PreferencesMsg::SetDefaultVideoAddress(addr) => self.set_default_video_address(addr),
+            PreferencesMsg::SetDefaultVideoSource(source) => self.set_default_video_source(source),
         }
         send!(parent_sender, AppMsg::PreferencesUpdated(self.clone()));
     }

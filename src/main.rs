@@ -83,8 +83,6 @@ pub struct AppModel {
     #[no_eq]
     #[derivative(Default(value="FactoryVec::new()"))]
     slaves: FactoryVec<MyComponent<SlaveModel>>,
-    // #[no_eq]
-    // slave_input_event_senders: Rc<RefCell<Vec<Sender<InputSourceEvent>>>>,
     #[no_eq]
     preferences: Rc<RefCell<PreferencesModel>>,
     #[no_eq]
@@ -282,13 +280,15 @@ impl AppUpdate for AppModel {
             },
             AppMsg::OpenKeybindingsWindow => todo!(),
             AppMsg::NewSlave(app_window) => {
-                let mut ip_octets = self.get_preferences().borrow().get_default_slave_ipv4_address().octets();
+                let mut ip_octets = self.get_preferences().borrow().get_default_slave_address().octets();
                 let index = self.get_slaves().len() as u8;
                 ip_octets[3] = ip_octets[3].wrapping_add(index);
-                let video_port = self.get_preferences().borrow().get_default_local_video_port().wrapping_add(index as u16);
+                let video_port = self.get_preferences().borrow().get_default_video_port().wrapping_add(index as u16);
                 let (input_event_sender, input_event_receiver) = MainContext::channel(PRIORITY_DEFAULT);
                 let (slave_event_sender, slave_event_receiver) = MainContext::channel(PRIORITY_DEFAULT);
-                let mut slave_config = SlaveConfigModel::new(Ipv4Addr::from(ip_octets), self.get_preferences().borrow().get_default_slave_port().clone(), video_port, self.get_preferences().borrow().get_default_colorspace_conversion().clone(), self.get_preferences().borrow().get_default_video_decoder().clone());
+                let mut slave_config = SlaveConfigModel::new(
+                    Ipv4Addr::from(ip_octets),
+                    video_port);
                 slave_config.set_keep_video_display_ratio(*self.get_preferences().borrow().get_default_keep_video_display_ratio());
                 let slave = SlaveModel::new(slave_config, self.get_preferences().clone(), &slave_event_sender, input_event_sender);
                 let component = MyComponent::new(slave, (sender.clone(), app_window));

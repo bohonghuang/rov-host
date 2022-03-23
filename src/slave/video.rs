@@ -16,7 +16,7 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-use std::{ffi::c_void, str::FromStr, sync::{Arc, Mutex}};
+use std::{ffi::c_void, str::FromStr, sync::{Arc, Mutex}, net::Ipv4Addr};
 
 use glib::{Sender, clone, EnumClass};
 use gtk::prelude::*;
@@ -57,6 +57,17 @@ impl ImageFormat {
             ImageFormat::TIFF => "tiff",
             ImageFormat::BMP => "bmp",
         }
+    }
+}
+
+#[derive(EnumIter, EnumToString, EnumFromString, PartialEq, Clone, Debug, Serialize, Deserialize)]
+pub enum VideoSource {
+    UDP, RTSP
+}
+
+impl Default for VideoSource {
+    fn default() -> Self {
+        Self::UDP
     }
 }
 
@@ -285,23 +296,45 @@ pub fn disconnect_elements_to_pipeline(pipeline: &Pipeline, (output_tee, teepad)
     Ok(future)
 }
 
-pub fn create_pipeline(port: u16, colorspace_converter: ColorspaceConversion, decoder: VideoDecoder) -> Result<gst::Pipeline, &'static str> {
+pub fn create_pipeline(source: VideoSource,address: Option<Ipv4Addr>, port: Option<u16>, colorspace_conversion: ColorspaceConversion, decoder: VideoDecoder) -> Result<gst::Pipeline, &'static str> {
     let pipeline = gst::Pipeline::new(None);
-    let udpsrc = gst::ElementFactory::make("udpsrc", None).map_err(|_| "Missing element: udpsrc")?;
-    let caps_src = gst::caps::Caps::from_str("application/x-rtp, media=(string)video").map_err(|_| "Cannot create capability for udpsrc")?;
-    udpsrc.set_property("caps", caps_src);
+    let video_src = match source {
+        VideoSource::UDP => {
+            let udpsrc = gst::ElementFactory::make("udpsrc", None).map_err(|_| "Missing element: udpsrc")?;
+            if let Some(address) = address {
+                udpsrc.set_property("address", address.to_string());
+            }
+            if let Some(port) = port {
+                udpsrc.set_property("port", port as i32);
+            }
+            let caps_src = gst::caps::Caps::from_str("application/x-rtp, media=(string)video").map_err(|_| "Cannot create capability for udpsrc")?;
+            udpsrc.set_property("caps", caps_src);
+            udpsrc
+        },
+        VideoSource::RTSP => {
+            let rtspsrc = gst::ElementFactory::make("udpsrc", None).map_err(|_| "Missing element: rtspsrc")?;
+            let mut location = address.unwrap_or(Ipv4Addr::LOCALHOST).to_string();
+            if let Some(port) = port {
+                if location.ends_with("/") {
+                    location.pop();
+                }
+                location.push_str(&port.to_string());
+            };
+            rtspsrc.set_property("location", location);
+            rtspsrc
+        },
+    };
     let appsink = gst::ElementFactory::make("appsink", Some("display")).map_err(|_| "Missing element: appsink")?;
-    udpsrc.set_property("port", port as i32);
     let caps_app = gst::caps::Caps::from_str("video/x-raw, format=RGB").map_err(|_| "Cannot create capability for appsink")?;
     appsink.set_property("caps", caps_app);
     let tee_source = gst::ElementFactory::make("tee", Some("tee_source")).map_err(|_| "Missing element: tee")?;
     let tee_decoded = gst::ElementFactory::make("tee", Some("tee_decoded")).map_err(|_| "Missing element: tee")?;
     let queue_to_decode = gst::ElementFactory::make("queue", None).map_err(|_| "Missing element: queue")?;
     let queue_to_app = gst::ElementFactory::make("queue", None).map_err(|_| "Missing element: queue")?;
-    let colorspace_conversion_elements = colorspace_converter.gst_elements()?;
+    let colorspace_conversion_elements = colorspace_conversion.gst_elements()?;
     let (depay_elements, decoder_elements) = decoder.gst_main_elements()?;
     
-    pipeline.add_many(&[&udpsrc, &appsink, &tee_decoded, &tee_source, &queue_to_app, &queue_to_decode]).map_err(|_| "Cannot create pipeline")?;
+    pipeline.add_many(&[&video_src, &appsink, &tee_decoded, &tee_source, &queue_to_app, &queue_to_decode]).map_err(|_| "Cannot create pipeline")?;
     pipeline.add_many(&colorspace_conversion_elements.iter().collect::<Vec<_>>()).map_err(|_| "Cannot add colorspace conversion elements to pipeline")?;
     for depay_element in &depay_elements {
         pipeline.add(depay_element).map_err(|_| "Cannot add depay elements to pipeline")?;
@@ -326,7 +359,7 @@ pub fn create_pipeline(port: u16, colorspace_converter: ColorspaceConversion, de
     }
     match (depay_elements.first(), depay_elements.last()) {
         (Some(first), Some(last)) => {
-            udpsrc.link(first).map_err(|_| "Cannot link udpsrc to the first depay element")?;
+            video_src.link(first).map_err(|_| "Cannot link udpsrc to the first depay element")?;
             last.link(&tee_source).map_err(|_| "Cannot link the last depay element to tee")?;
         },
         _ => return Err("Missing depay element"),
