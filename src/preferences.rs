@@ -20,7 +20,7 @@ use std::{fs, path::PathBuf, str::FromStr};
 
 use glib::Sender;
 use gtk::{Align, Entry, Inhibit, Label, SpinButton, StringList, Switch, prelude::*};
-use adw::{PreferencesGroup, PreferencesPage, PreferencesWindow, prelude::*, ComboRow, ActionRow};
+use adw::{PreferencesGroup, PreferencesPage, PreferencesWindow, prelude::*, ComboRow, ActionRow, ExpanderRow};
 use relm4::{ComponentUpdate, Model, Widgets, send};
 use relm4_macros::widget;
 
@@ -29,7 +29,7 @@ use strum::IntoEnumIterator;
 use derivative::*;
 use url::Url;
 
-use crate::{AppModel, AppMsg, slave::video::{VideoEncoder, VideoDecoder, ImageFormat, ColorspaceConversion}};
+use crate::{AppModel, AppMsg, slave::video::{VideoEncoder, VideoDecoder, ImageFormat, ColorspaceConversion, VideoCodec, VideoCodecProvider}};
 
 pub fn get_data_path() -> PathBuf {
     const APP_DIR_NAME: &str = "rovhost";
@@ -77,7 +77,8 @@ pub struct PreferencesModel {
     pub image_save_path: PathBuf,
     #[derivative(Default(value="ImageFormat::JPEG"))]
     pub image_save_format: ImageFormat,
-    pub default_video_encoder: Option<VideoEncoder>,
+    pub default_reencode_recording_video: bool,
+    pub default_video_encoder: VideoEncoder,
     #[derivative(Default(value="Url::from_str(\"tcp://192.168.137.219:8888\").unwrap()"))]
     pub default_slave_url: Url,
     #[derivative(Default(value="Url::from_str(\"rtp://127.0.0.1:5600\").unwrap()"))]
@@ -106,13 +107,16 @@ pub enum PreferencesMsg {
     SetVideoSavePath(PathBuf),
     SetImageSavePath(PathBuf),
     SetImageSaveFormat(ImageFormat),
-    SetVideoEncoder(Option<VideoEncoder>),
     SetInitialSlaveNum(u8),
     SetInputSendingRate(u16),
     SetDefaultKeepVideoDisplayRatio(bool),
-    SetDefaultVideoDecoder(VideoDecoder),
+    SetDefaultVideoDecoderCodec(VideoCodec),
+    SetDefaultVideoDecoderCodecProvider(VideoCodecProvider),
+    SetDefaultVideoEncoderCodec(VideoCodec),
+    SetDefaultVideoEncoderCodecProvider(VideoCodecProvider),
     SetDefaultParameterTunerGraphViewPointNumberLimit(u16),
     SetDefaultColorspaceConversion(ColorspaceConversion),
+    SetDefaultReencodeRecordingVideo(bool),
     SetDefaultVideoUrl(Url),
     SetDefaultSlaveUrl(Url),
     SaveToFile,
@@ -190,7 +194,7 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                     set_description: Some("向下位机发送控制信号的设置（需要重新连接以应用更改）"),
                     add = &ActionRow {
                         set_title: "增量发送",
-                        set_subtitle: "每次发送只发送相对上一次发送的变化值以节省数据发送量。",
+                        set_subtitle: "每次发送只发送相对上一次发送的变化值以节省数据发送量",
                         set_sensitive: false,
                         add_suffix: increamental_sending_switch = &Switch {
                             set_active: false,
@@ -200,7 +204,7 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                     },
                     add = &ActionRow {
                         set_title: "输入发送率",
-                        set_subtitle: "每秒钟向下位机发送的控制数据包的个数，该值越高意味着控制越灵敏，但在较差的网络条件下可能产生更大的延迟。",
+                        set_subtitle: "每秒钟向下位机发送的控制数据包的个数，该值越高意味着控制越灵敏，但在较差的网络条件下可能产生更大的延迟",
                         add_suffix = &SpinButton::with_range(1.0, 1000.0, 1.0) {
                             set_value: track!(model.changed(PreferencesModel::default_input_sending_rate()), model.default_input_sending_rate as f64),
                             set_digits: 0,
@@ -269,17 +273,32 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                     },
                     add = &ComboRow {
                         set_title: "默认解码器",
-                        set_subtitle: "拉流时使用的解码器",
+                        set_subtitle: "拉流时默认使用的解码器",
                         set_model: Some(&{
                             let model = StringList::new(&[]);
-                            for value in VideoDecoder::iter() {
+                            for value in VideoCodec::iter() {
                                 model.append(&value.to_string());
                             }
                             model
                         }),
-                        set_selected: track!(model.changed(PreferencesModel::default_video_decoder()), VideoDecoder::iter().position(|x| x == model.default_video_decoder).unwrap() as u32),
+                        set_selected: track!(model.changed(PreferencesModel::default_video_decoder()), VideoCodec::iter().position(|x| x == model.default_video_decoder.0).unwrap() as u32),
                         connect_selected_notify(sender) => move |row| {
-                            send!(sender, PreferencesMsg::SetDefaultVideoDecoder(VideoDecoder::iter().nth(row.selected() as usize).unwrap()))
+                            send!(sender, PreferencesMsg::SetDefaultVideoDecoderCodec(VideoCodec::iter().nth(row.selected() as usize).unwrap()))
+                        }
+                    },
+                    add = &ComboRow {
+                        set_title: "默认解码器接口",
+                        set_subtitle: "拉流时默认调用的解码器接口",
+                        set_model: Some(&{
+                            let model = StringList::new(&[]);
+                            for value in VideoCodecProvider::iter() {
+                                model.append(&value.to_string());
+                            }
+                            model
+                        }),
+                        set_selected: track!(model.changed(PreferencesModel::default_video_decoder()), VideoCodecProvider::iter().position(|x| x == model.default_video_decoder.1).unwrap() as u32),
+                        connect_selected_notify(sender) => move |row| {
+                            send!(sender, PreferencesMsg::SetDefaultVideoDecoderCodecProvider(VideoCodecProvider::iter().nth(row.selected() as usize).unwrap()))
                         }
                     },
                 },
@@ -321,21 +340,44 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                             send!(sender, PreferencesMsg::OpenVideoDirectory);
                         }
                     },
-                    add = &ComboRow {
-                        set_title: "编码器",
-                        set_subtitle: "视频录制时使用的编码器",
-                        set_model: Some(&{
-                            let model = StringList::new(&[]);
-                            model.append("不编码");
-                            for value in VideoEncoder::iter() {
-                                model.append(&value.to_string());
+                    add = &ExpanderRow {
+                        set_title: "录制时重新编码",
+                        set_show_enable_switch: true,
+                        set_expanded: *model.get_default_reencode_recording_video(),
+                        set_enable_expansion: track!(model.changed(PreferencesModel::default_reencode_recording_video()), *model.get_default_reencode_recording_video()),
+                        connect_enable_expansion_notify(sender) => move |expander| {
+                            send!(sender, PreferencesMsg::SetDefaultReencodeRecordingVideo(expander.enables_expansion()));
+                        },
+                        add_row = &ComboRow {
+                            set_title: "默认编码器",
+                            set_subtitle: "视频录制时默认使用的编码器",
+                            set_model: Some(&{
+                                let model = StringList::new(&[]);
+                                for value in VideoCodec::iter() {
+                                    model.append(&value.to_string());
+                                }
+                                model
+                            }),
+                            set_selected: track!(model.changed(PreferencesModel::default_video_encoder()), VideoCodec::iter().position(|x| x == model.default_video_encoder.0).unwrap() as u32),
+                            connect_selected_notify(sender) => move |row| {
+                                send!(sender, PreferencesMsg::SetDefaultVideoEncoderCodec(VideoCodec::iter().nth(row.selected() as usize).unwrap()))
                             }
-                            model
-                        }),
-                        set_selected: track!(model.changed(PreferencesModel::default_video_encoder()), VideoEncoder::iter().position(|x| model.default_video_encoder.map_or_else(|| false, |y| y == x)).map_or_else(|| 0, |x| x + 1) as u32),
-                        connect_selected_notify(sender) => move |row| {
-                            send!(sender, PreferencesMsg::SetVideoEncoder(if row.selected() > 0 { Some(VideoEncoder::iter().nth(row.selected().wrapping_sub(1) as usize).unwrap()) } else { None }));
-                        }
+                        },
+                        add_row = &ComboRow {
+                            set_title: "默认编码器接口",
+                            set_subtitle: "视频录制时默认调用的编码器接口",
+                            set_model: Some(&{
+                                let model = StringList::new(&[]);
+                                for value in VideoCodecProvider::iter() {
+                                    model.append(&value.to_string());
+                                }
+                                model
+                            }),
+                            set_selected: track!(model.changed(PreferencesModel::default_video_encoder()), VideoCodecProvider::iter().position(|x| x == model.default_video_encoder.1).unwrap() as u32),
+                            connect_selected_notify(sender) => move |row| {
+                                send!(sender, PreferencesMsg::SetDefaultVideoEncoderCodecProvider(VideoCodecProvider::iter().nth(row.selected() as usize).unwrap()))
+                            }
+                        },
                     }
                 }
             },
@@ -347,7 +389,7 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                     set_description: Some("配置控制环调试选项"),
                     add = &ActionRow {
                         set_title: "可视化最大点数",
-                        set_subtitle: "绘制控制环可视化图表时使用最多使用多少个点，这将影响最多能观测的历史数据。",
+                        set_subtitle: "绘制控制环可视化图表时使用最多使用多少个点，这将影响最多能观测的历史数据",
                         add_suffix = &SpinButton::with_range(1.0, 255.0, 1.0) {
                             set_value: track!(model.changed(PreferencesModel::default_param_tuner_graph_view_point_num_limit()), model.default_param_tuner_graph_view_point_num_limit as f64),
                             set_digits: 0,
@@ -377,11 +419,9 @@ impl ComponentUpdate<AppModel> for PreferencesModel {
         self.reset();
         match msg {
             PreferencesMsg::SetVideoSavePath(path) => self.set_video_save_path(path),
-            PreferencesMsg::SetVideoEncoder(encoder) => self.set_default_video_encoder(encoder),
             PreferencesMsg::SetInitialSlaveNum(num) => self.set_initial_slave_num(num),
             PreferencesMsg::SetInputSendingRate(rate) => self.set_default_input_sending_rate(rate),
             PreferencesMsg::SetDefaultKeepVideoDisplayRatio(value) => self.set_default_keep_video_display_ratio(value),
-            PreferencesMsg::SetDefaultVideoDecoder(decoder) => self.set_default_video_decoder(decoder),
             PreferencesMsg::SaveToFile => serde_json::to_string_pretty(&self).ok().and_then(|json| fs::write(get_preference_path(), json).ok()).unwrap(),
             PreferencesMsg::SetImageSavePath(path) => self.set_image_save_path(path),
             PreferencesMsg::SetImageSaveFormat(format) => self.set_image_save_format(format),
@@ -391,6 +431,11 @@ impl ComponentUpdate<AppModel> for PreferencesModel {
             PreferencesMsg::SetDefaultColorspaceConversion(conversion) => self.set_default_colorspace_conversion(conversion),
             PreferencesMsg::SetDefaultVideoUrl(url) => self.default_video_url = url,
             PreferencesMsg::SetDefaultSlaveUrl(url) => self.default_slave_url = url,
+            PreferencesMsg::SetDefaultVideoDecoderCodec(codec) => self.get_mut_default_video_decoder().0 = codec,
+            PreferencesMsg::SetDefaultVideoDecoderCodecProvider(provider) => self.get_mut_default_video_decoder().1 = provider,
+            PreferencesMsg::SetDefaultReencodeRecordingVideo(reencode) => self.set_default_reencode_recording_video(reencode),
+            PreferencesMsg::SetDefaultVideoEncoderCodec(codec) => self.get_mut_default_video_encoder().0 = codec,
+            PreferencesMsg::SetDefaultVideoEncoderCodecProvider(provider) => self.get_mut_default_video_encoder().1 = provider,
         }
         send!(parent_sender, AppMsg::PreferencesUpdated(self.clone()));
     }

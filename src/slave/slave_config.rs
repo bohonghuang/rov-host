@@ -28,7 +28,7 @@ use strum::IntoEnumIterator;
 use derivative::*;
 use url::Url;
 
-use crate::{preferences::PreferencesModel, slave::video::{VideoDecoder, ColorspaceConversion}};
+use crate::{preferences::PreferencesModel, slave::video::{VideoDecoder, ColorspaceConversion, VideoCodecProvider, VideoCodec}};
 use super::{SlaveMsg, video::VideoAlgorithm};
 
 #[tracker::track(pub)]
@@ -92,6 +92,8 @@ impl MicroModel for SlaveConfigModel {
             SlaveConfigMsg::SetColorspaceConversion(conversion) => self.set_colorspace_conversion(conversion),
             SlaveConfigMsg::SetVideoUrl(url) => self.video_url = url,
             SlaveConfigMsg::SetSlaveUrl(url) => self.slave_url = url,
+            SlaveConfigMsg::SetVideoDecoderCodec(codec) => self.get_mut_video_decoder().0 = codec,
+            SlaveConfigMsg::SetVideoDecoderCodecProvider(provider) => self.get_mut_video_decoder().1 = provider,
         }
         send!(parent_sender, SlaveMsg::ConfigUpdated);
     }
@@ -112,6 +114,8 @@ pub enum SlaveConfigMsg {
     SetVideoAlgorithm(Option<VideoAlgorithm>),
     SetVideoDecoder(VideoDecoder),
     SetColorspaceConversion(ColorspaceConversion),
+    SetVideoDecoderCodec(VideoCodec),
+    SetVideoDecoderCodecProvider(VideoCodecProvider),
 }
 
 #[micro_widget(pub)]
@@ -216,18 +220,33 @@ impl MicroWidgets<SlaveConfigModel> for SlaveConfigWidgets {
                                 }
                             },
                             add = &ComboRow {
-                                set_title: "视频解码器",
+                                set_title: "解码器",
                                 set_subtitle: "拉流时使用的解码器",
                                 set_model: Some(&{
                                     let model = StringList::new(&[]);
-                                    for value in VideoDecoder::iter() {
+                                    for value in VideoCodec::iter() {
                                         model.append(&value.to_string());
                                     }
                                     model
                                 }),
-                                set_selected: track!(model.changed(SlaveConfigModel::video_decoder()), VideoDecoder::iter().position(|x| x == model.video_decoder).unwrap() as u32),
+                                set_selected: track!(model.changed(SlaveConfigModel::video_decoder()), VideoCodec::iter().position(|x| x == model.video_decoder.0).unwrap() as u32),
                                 connect_selected_notify(sender) => move |row| {
-                                    send!(sender, SlaveConfigMsg::SetVideoDecoder(VideoDecoder::iter().nth(row.selected() as usize).unwrap()));
+                                    send!(sender, SlaveConfigMsg::SetVideoDecoderCodec(VideoCodec::iter().nth(row.selected() as usize).unwrap()))
+                                }
+                            },
+                            add = &ComboRow {
+                                set_title: "解码器接口",
+                                set_subtitle: "拉流时调用的解码器接口",
+                                set_model: Some(&{
+                                    let model = StringList::new(&[]);
+                                    for value in VideoCodecProvider::iter() {
+                                        model.append(&value.to_string());
+                                    }
+                                    model
+                                }),
+                                set_selected: track!(model.changed(SlaveConfigModel::video_decoder()), VideoCodecProvider::iter().position(|x| x == model.video_decoder.1).unwrap() as u32),
+                                connect_selected_notify(sender) => move |row| {
+                                    send!(sender, SlaveConfigMsg::SetVideoDecoderCodecProvider(VideoCodecProvider::iter().nth(row.selected() as usize).unwrap()))
                                 }
                             },
                         },

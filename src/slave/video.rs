@@ -74,7 +74,7 @@ impl VideoSource {
         }
     }
     
-    fn gst_element(&self) -> Result<Element, &'static str> {
+    fn gst_element(&self) -> Result<Element, String> {
         match self {
             VideoSource::UDP(url) => {
                 let udpsrc = gst::ElementFactory::make("udpsrc", None).map_err(|_| "Missing element: udpsrc")?;
@@ -102,53 +102,89 @@ pub enum VideoAlgorithm {
     CLAHE
 }
 
-#[derive(EnumIter, EnumFromString, PartialEq, Clone, Debug, Serialize, Deserialize, Copy)]
-pub enum VideoEncoder {
-    H264Software, H265Software, VP8Software, VP9Software, H264HardwareNvidia, H265HardwareNvidia
+#[derive(PartialEq, Clone, Debug, Serialize, Deserialize)]
+pub struct VideoEncoder(pub VideoCodec, pub VideoCodecProvider);
+
+#[derive(EnumIter, PartialEq, Clone, Debug, Serialize, Deserialize, Copy)]
+pub enum VideoCodec {
+    H264, H265, VP8, VP9, AV1
+}
+
+impl ToString for VideoCodec {
+    fn to_string(&self) -> String {
+        match self {
+            VideoCodec::H264 => "H.264",
+            VideoCodec::H265 => "H.265",
+            VideoCodec::VP8 => "VP8",
+            VideoCodec::VP9 => "VP9",
+            VideoCodec::AV1 => "AV1",
+        }.to_string()
+    }
+}
+
+impl VideoCodec {
+    fn name(&self) -> String {
+        self.to_string().to_lowercase()
+    }
+
+    fn depay_name(&self) -> String {
+        format!("rtp{}depay", self.name())
+    }
+}
+    
+#[derive(EnumIter, PartialEq, Clone, Debug, Serialize, Deserialize, Copy)]
+pub enum VideoCodecProvider {
+    Native, AVCodec, NVCodec, VAAPI, D3D11
+}
+
+impl ToString for VideoCodecProvider {
+    fn to_string(&self) -> String {
+        match self {
+            VideoCodecProvider::Native => "原生 (软件)",
+            VideoCodecProvider::AVCodec => "FFMPEG (软件)",
+            VideoCodecProvider::NVCodec => "NVIDIA (硬件)",
+            VideoCodecProvider::VAAPI => "VAAPI (硬件)",
+            VideoCodecProvider::D3D11 => "Direct3D 11 (硬件)",
+        }.to_string()
+    }
+}
+
+impl VideoCodecProvider {
+    fn format_codec(&self, codec: VideoCodec, encode: bool) -> String {
+        let enc_or_dec = if encode { "enc" } else { "dec" };
+        match self {
+            VideoCodecProvider::NVCodec => format!("nv{0}{1}", codec.name(), enc_or_dec),
+            VideoCodecProvider::AVCodec => format!("av{1}_{0}", codec.name(), enc_or_dec),
+            VideoCodecProvider::VAAPI => format!("vaapi{0}{1}", codec.name(), enc_or_dec),
+            VideoCodecProvider::D3D11 => format!("d3d11{0}{1}", codec.name(), enc_or_dec),
+            VideoCodecProvider::Native => match codec {
+                VideoCodec::H264 => format!("x264{}", enc_or_dec),
+                VideoCodec::H265 => format!("x265{}", enc_or_dec),
+                codec => format!("{}{}", codec.name(), enc_or_dec),
+            },
+        }
+    }
 }
 
 impl VideoEncoder {
-    pub fn gst_record_elements(&self, colorspace_conversion: ColorspaceConversion, filename: &str) -> Result<Vec<Element>, &'static str> {
+    pub fn gst_record_elements(&self, colorspace_conversion: ColorspaceConversion, filename: &str) -> Result<Vec<Element>, String> {
         let mut elements = Vec::new();
         let queue_to_file = gst::ElementFactory::make("queue", None).map_err(|_| "Missing element: queue")?;
         elements.push(queue_to_file);
-        match self {
-            VideoEncoder::H264Software => {
-                let encoder = gst::ElementFactory::make("x264enc", None).map_err(|_| "Missing encdoer: x264enc")?;
-                // encoder.set_property_from_value("tune", &FlagsClass::new(encoder.property_type("tune").unwrap()).unwrap().to_value(0).unwrap());
-                elements.push(encoder);
-            },
-            VideoEncoder::H265Software => {
-                elements.extend_from_slice(&colorspace_conversion.gst_elements()?);
-                let encoder = gst::ElementFactory::make("x265enc", None).map_err(|_| "Missing encdoer: x265enc")?;
-                elements.push(encoder);
-                let h265parse = gst::ElementFactory::make("h265parse", None).map_err(|_| "Missing encdoer: h265parse")?;
-                elements.push(h265parse);
-            },
-            VideoEncoder::VP9Software => {
-                elements.extend_from_slice(&colorspace_conversion.gst_elements()?);
-                let encoder = gst::ElementFactory::make("vp9enc", None).map_err(|_| "Missing element: vp9enc")?;
-                elements.push(encoder);
-            },
-            VideoEncoder::H264HardwareNvidia => {
-                elements.extend_from_slice(&colorspace_conversion.gst_elements()?);
-                let encoder = gst::ElementFactory::make("nvh264enc", None).map_err(|_| "Missing encdoer: nvh264enc")?;
-                elements.push(encoder);
-                let h264parse = gst::ElementFactory::make("h264parse", None).map_err(|_| "Missing element: h265parse")?;
+        elements.extend_from_slice(&colorspace_conversion.gst_elements()?);
+        let encoder_name = self.1.format_codec(self.0, true);
+        let encoder = gst::ElementFactory::make(&encoder_name, None).map_err(|_| format!("Missing element: {}", &encoder_name))?;
+        elements.push(encoder);
+        match self.0 {
+            VideoCodec::H264 => {
+                let h264parse = gst::ElementFactory::make("h264parse", None).map_err(|_| "Missing element: h264parse")?;
                 elements.push(h264parse);
             },
-            VideoEncoder::H265HardwareNvidia => {
-                elements.extend_from_slice(&colorspace_conversion.gst_elements()?);
-                let encoder = gst::ElementFactory::make("nvh265enc", None).map_err(|_| "Missing encdoer: nvh265enc")?;
-                elements.push(encoder);
+            VideoCodec::H265 => {
                 let h265parse = gst::ElementFactory::make("h265parse", None).map_err(|_| "Missing element: h265parse")?;
                 elements.push(h265parse);
             },
-            VideoEncoder::VP8Software => {
-                elements.extend_from_slice(&colorspace_conversion.gst_elements()?);
-                let encoder = gst::ElementFactory::make("vp8enc", None).map_err(|_| "Missing encdoer: vp8enc")?;
-                elements.push(encoder);
-            },
+            _ => (),
         };
         let matroskamux = gst::ElementFactory::make("matroskamux", None).map_err(|_| "Missing muxer: matroskamux")?;
         elements.push(matroskamux);
@@ -159,94 +195,61 @@ impl VideoEncoder {
     }
 }
 
-impl ToString for VideoEncoder {
-    fn to_string(&self) -> String {
-        match self {
-            VideoEncoder::H264Software => "H.264 (CPU)",
-            VideoEncoder::H264HardwareNvidia => "H.264 (NVIDIA)",
-            VideoEncoder::H265Software => "H.265 (CPU)",
-            VideoEncoder::H265HardwareNvidia => "H.265 (NVIDIA)",
-            VideoEncoder::VP8Software => "VP8 (CPU)",
-            VideoEncoder::VP9Software => "VP9 (CPU)",
-        }.to_string()
-    }
-}
-
-#[derive(EnumIter, EnumFromString, PartialEq, Clone, Debug, Serialize, Deserialize, Copy)]
-pub enum VideoDecoder {
-    H264Software, H264HardwareNvidia, H264HardwareNvidiaStateless, H265Software, H265HardwareNvidia
-}
-
-impl ToString for VideoDecoder {
-    fn to_string(&self) -> String {
-        match self {
-            VideoDecoder::H264Software => "H.264 (CPU)",
-            VideoDecoder::H264HardwareNvidia => "H.264 (NVIDIA)",
-            VideoDecoder::H264HardwareNvidiaStateless => "H.264 (NVIDIA 无状态)",
-            VideoDecoder::H265Software => "H.265 (CPU)",
-            VideoDecoder::H265HardwareNvidia => "H.265 (NVIDIA)",
-        }.to_string()
-    }
-}
+#[derive(PartialEq, Clone, Debug, Serialize, Deserialize, Copy)]
+pub struct VideoDecoder(pub VideoCodec, pub VideoCodecProvider);
 
 impl VideoDecoder {
-    pub fn gst_record_elements(&self, filename: &str) -> Result<Vec<Element>, &'static str> {
-        let parse = match self {
-            VideoDecoder::H264Software | VideoDecoder::H264HardwareNvidia | VideoDecoder::H264HardwareNvidiaStateless => gst::ElementFactory::make("h264parse", None).map_err(|_| "Missing element: h264parse")?,
-            VideoDecoder::H265Software | VideoDecoder::H265HardwareNvidia => gst::ElementFactory::make("h265parse", None).map_err(|_| "Missing element: h265parse")?,
-        };
+    pub fn gst_record_elements(&self, filename: &str) -> Result<Vec<Element>, String> {
+        let mut elements = Vec::new();
         let queue_to_file = gst::ElementFactory::make("queue", None).map_err(|_| "Missing element: queue")?;
+        elements.push(queue_to_file);
+        match self.0 {
+            VideoCodec::H264 => {
+                let parse = gst::ElementFactory::make("h264parse", None).map_err(|_| "Missing element: h264parse")?;
+                elements.push(parse);
+            },
+            VideoCodec::H265 => {
+                let parse = gst::ElementFactory::make("h265parse", None).map_err(|_| "Missing element: h265parse")?;
+                elements.push(parse);
+            },
+            _ => (),
+        }
+        let matroskamux = gst::ElementFactory::make("matroskamux", None).map_err(|_| "Missing muxer: matroskamux")?;
+        elements.push(matroskamux);
         let filesink = gst::ElementFactory::make("filesink", None).map_err(|_| "Missing element: filesink")?;
         filesink.set_property("location", filename);
-        let matroskamux = gst::ElementFactory::make("matroskamux", None).map_err(|_| "Missing muxer: matroskamux")?;
-        Ok(vec![queue_to_file, parse, matroskamux, filesink])
+        elements.push(filesink);
+        Ok(elements)
     }
     
-    pub fn gst_main_elements(&self) -> Result<(Vec<Element>, Vec<Element>), &'static str> {
-        match self {
-            decoder_h264 @ (VideoDecoder::H264Software | VideoDecoder::H264HardwareNvidia | VideoDecoder::H264HardwareNvidiaStateless) => {
-                let rtph264depay = gst::ElementFactory::make("rtph264depay", None).map_err(|_| "Missing element: rtph264depay")?;
-                let h264parse = gst::ElementFactory::make("h264parse", None).map_err(|_| "Missing element: h264parse")?;
-                let decoder_name = match decoder_h264 {
-                    VideoDecoder::H264Software => "avdec_h264",
-                    VideoDecoder::H264HardwareNvidia => "nvh264dec",
-                    VideoDecoder::H264HardwareNvidiaStateless => "nvh264sldec",
-                    _ => unreachable!(),
-                };
-                let decoder = gst::ElementFactory::make(decoder_name, Some("video_decoder")).map_err(|_| match decoder_h264 {
-                    VideoDecoder::H264Software => "Missing decoder: avdec_h264",
-                    VideoDecoder::H264HardwareNvidia => "Missing decoder: nvh264dec",
-                    VideoDecoder::H264HardwareNvidiaStateless => "Missing decoder: nvh264sldec",
-                    _ => unreachable!(),
-                })?;
-                Ok((vec![rtph264depay], if decoder_h264 == &VideoDecoder::H264Software { vec![decoder] } else { vec![h264parse, decoder] }))
+    pub fn gst_main_elements(&self) -> Result<(Vec<Element>, Vec<Element>), String> {
+        let depay = gst::ElementFactory::make(&self.0.depay_name(), None).map_err(|_| "The depay element of current codec is not available")?;
+        let mut decode_elements = Vec::new();
+        match self.0 {
+            VideoCodec::H264 => {
+                let parse = gst::ElementFactory::make("h264parse", None).map_err(|_| "Missing element: h264parse")?;
+                decode_elements.push(parse);
             },
-            decoder_h265 @ (VideoDecoder::H265Software | VideoDecoder::H265HardwareNvidia) => {
-                let rtph265depay = gst::ElementFactory::make("rtph265depay", None).map_err(|_| "Missing element: rtph265depay")?;
-                let h265parse = gst::ElementFactory::make("h265parse", None).map_err(|_| "Missing element: h265parse")?;
-                let decoder_name = match decoder_h265 {
-                    VideoDecoder::H265Software => "avdec_h265",
-                    VideoDecoder::H265HardwareNvidia => "nvh265dec",
-                    _ => unreachable!(),
-                };
-                let decoder = gst::ElementFactory::make(decoder_name, Some("video_decoder")).map_err(|_| match decoder_h265 {
-                    VideoDecoder::H265Software => "Missing decoder: avdec_h265",
-                    VideoDecoder::H265HardwareNvidia => "Missing decoder: nvh265dec",
-                    _ => unreachable!(),
-                })?;
-                Ok((vec![rtph265depay], vec![h265parse, decoder]))
+            VideoCodec::H265 => {
+                let parse = gst::ElementFactory::make("h265parse", None).map_err(|_| "Missing element: h265parse")?;
+                decode_elements.push(parse);
             },
+            _ => (),
         }
+        let decoder_name = self.1.format_codec(self.0, false);
+        let decoder = gst::ElementFactory::make(&decoder_name, Some("video_decoder")).map_err(|_| format!("Missing element: {}", &decoder_name))?;
+        decode_elements.push(decoder);
+        Ok((vec![depay], decode_elements))
     }
 }
 
 #[derive(EnumIter, EnumFromString, EnumToString, PartialEq, Clone, Debug, Serialize, Deserialize, Copy)]
 pub enum ColorspaceConversion {
-    CPU, CUDA
+    CPU, CUDA, D3D11
 }
 
 impl ColorspaceConversion {
-    fn gst_elements(&self) -> Result<Vec<Element>, &'static str> {
+    fn gst_elements(&self) -> Result<Vec<Element>, String> {
         match self {
             ColorspaceConversion::CPU => Ok(vec![gst::ElementFactory::make("videoconvert", None).map_err(|_| "Missing element: videoconvert")?]),
             ColorspaceConversion::CUDA => Ok(vec![
@@ -254,22 +257,31 @@ impl ColorspaceConversion {
                 gst::ElementFactory::make("cudaconvert", None).map_err(|_| "Missing element: cudaconvert")?,
                 gst::ElementFactory::make("cudadownload", None).map_err(|_| "Missing element: cudadownload")?,
             ]),
+            ColorspaceConversion::D3D11 => Ok(vec![
+                gst::ElementFactory::make("d3d11upload", None).map_err(|_| "Missing element: d3d11upload")?,
+                gst::ElementFactory::make("d3d11convert", None).map_err(|_| "Missing element: d3d11convert")?,
+                gst::ElementFactory::make("d3d11download", None).map_err(|_| "Missing element: d3d11download")?,
+            ]),
         }
     }
 }
 impl Default for VideoEncoder {
-    fn default() -> Self { Self::H264Software }
+    fn default() -> Self {
+        Self(VideoCodec::H264, VideoCodecProvider::Native)
+    }
 }
 
 impl Default for VideoDecoder {
-    fn default() -> Self { Self::H264Software }
+    fn default() -> Self {
+        Self(VideoCodec::H264, VideoCodecProvider::AVCodec)
+    }
 }
 
 impl Default for ColorspaceConversion {
     fn default() -> Self { Self::CPU }
 }
 
-pub fn connect_elements_to_pipeline(pipeline: &Pipeline, tee_name: &str, elements: &[Element]) -> Result<(Element, Pad), &'static str> {
+pub fn connect_elements_to_pipeline(pipeline: &Pipeline, tee_name: &str, elements: &[Element]) -> Result<(Element, Pad), String> {
     let output_tee = pipeline.by_name(tee_name).ok_or("Cannot find output_tee")?;
     if let Some(element) = elements.first() {
         pipeline.add(element).map_err(|_| "Cannot add the first element to pipeline")?; // 必须先添加，再连接
@@ -290,7 +302,7 @@ pub fn connect_elements_to_pipeline(pipeline: &Pipeline, tee_name: &str, element
     Ok((output_tee, teepad))
 }
 
-pub fn disconnect_elements_to_pipeline(pipeline: &Pipeline, (output_tee, teepad): &(Element, Pad), elements: &[Element]) -> Result<Future<()>, &'static str> {
+pub fn disconnect_elements_to_pipeline(pipeline: &Pipeline, (output_tee, teepad): &(Element, Pad), elements: &[Element]) -> Result<Future<()>, String> {
     let first_sinkpad = elements.first().unwrap().static_pad("sink").unwrap();
     teepad.unlink(&first_sinkpad).map_err(|_| "Cannot unlink elements")?;
     output_tee.remove_pad(teepad).map_err(|_| "Cannot remove pad from output tee")?;
@@ -323,7 +335,7 @@ pub fn disconnect_elements_to_pipeline(pipeline: &Pipeline, (output_tee, teepad)
     Ok(future)
 }
 
-pub fn create_pipeline(source: VideoSource, colorspace_conversion: ColorspaceConversion, decoder: VideoDecoder) -> Result<gst::Pipeline, &'static str> {
+pub fn create_pipeline(source: VideoSource, colorspace_conversion: ColorspaceConversion, decoder: VideoDecoder) -> Result<gst::Pipeline, String> {
     let pipeline = gst::Pipeline::new(None);
     let video_src = source.gst_element()?;
     let appsink = gst::ElementFactory::make("appsink", Some("display")).map_err(|_| "Missing element: appsink")?;
@@ -385,21 +397,21 @@ pub fn create_pipeline(source: VideoSource, colorspace_conversion: ColorspaceCon
             }
             last.link(&tee_source).map_err(|_| "Cannot link the last depay element to tee").unwrap();
         },
-        _ => return Err("Missing depay element"),
+        _ => return Err("Missing depay element".to_string()),
     }
     match (decoder_elements.first(), decoder_elements.last()) {
         (Some(first), Some(last)) => {
             queue_to_decode.link(first).map_err(|_| "Cannot link queue to the first decoder element")?;
             last.link(&tee_decoded).unwrap();
         },
-        _ => return Err("Missing decoder element"),
+        _ => return Err("Missing decoder element".to_string()),
     }
     match (colorspace_conversion_elements.first(), colorspace_conversion_elements.last()) {
         (Some(first), Some(last)) => {
             queue_to_app.link(first).map_err(|_| "Cannot link the last decoder element to first colorspace conversion element")?;
             last.link(&appsink).map_err(|_| "Cannot link last colorspace conversion element to appsink")?;
         },
-        _ => return Err("Missing decoder element"),
+        _ => return Err("Missing decoder element".to_string()),
     }
     queue_to_app.set_property_from_value("leaky", &EnumClass::new(queue_to_app.property_type("leaky").unwrap()).unwrap().to_value(2).unwrap());
     // appsink.set_property("sync", true);
@@ -443,7 +455,7 @@ fn apply_clahe(mut mat: Mat) -> Mat {
     mat
 }
 
-pub fn attach_pipeline_callback(pipeline: &Pipeline, sender: Sender<Mat>, config: Arc<Mutex<SlaveConfigModel>>) -> Result<(), &'static str> {
+pub fn attach_pipeline_callback(pipeline: &Pipeline, sender: Sender<Mat>, config: Arc<Mutex<SlaveConfigModel>>) -> Result<(), String> {
     let video_decoder = pipeline.by_name("video_decoder").unwrap();
     let video_decoder_pad = video_decoder.static_pad("src").ok_or("Cannot get static pad of the last decoder element")?;
     let frame_size: Arc<Mutex<Option<(i32, i32)>>> = Arc::new(Mutex::new(None));

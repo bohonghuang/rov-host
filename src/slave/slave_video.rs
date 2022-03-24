@@ -90,7 +90,7 @@ impl MicroModel for SlaveVideoModel {
             SlaveVideoMsg::StartRecord(pathbuf) => {
                 if let Some(pipeline) = &self.pipeline {
                     let preferences = self.preferences.borrow();
-                    let encoder = preferences.get_default_video_encoder();
+                    let encoder = if *preferences.get_default_reencode_recording_video() { Some(preferences.get_default_video_encoder()) } else { None };
                     let colorspace_conversion = self.config.lock().unwrap().get_colorspace_conversion().clone();
                     let record_handle = match encoder {
                         Some(encoder) => {
