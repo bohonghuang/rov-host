@@ -77,7 +77,7 @@ impl VideoSource {
     fn gst_element(&self) -> Result<Element, String> {
         match self {
             VideoSource::UDP(url) => {
-                let udpsrc = gst::ElementFactory::make("udpsrc", None).map_err(|_| "Missing element: udpsrc")?;
+                let udpsrc = gst::ElementFactory::make("udpsrc", Some("source")).map_err(|_| "Missing element: udpsrc")?;
                 if let Some(address) = url.host_str() {
                     udpsrc.set_property("address", address.to_string());
                 }
@@ -89,7 +89,7 @@ impl VideoSource {
                 Ok(udpsrc)
             },
             VideoSource::RTSP(url) => {
-                let rtspsrc = gst::ElementFactory::make("rtspsrc", None).map_err(|_| "Missing element: rtspsrc")?;
+                let rtspsrc = gst::ElementFactory::make("rtspsrc", Some("source")).map_err(|_| "Missing element: rtspsrc")?;
                 rtspsrc.set_property("location", url.to_string());
                 Ok(rtspsrc)
             },
@@ -229,7 +229,7 @@ impl VideoDecoder {
     }
     
     pub fn gst_main_elements(&self) -> Result<(Vec<Element>, Vec<Element>), String> {
-        let depay = gst::ElementFactory::make(&self.0.depay_name(), None).map_err(|_| "The depay element of current codec is not available")?;
+        let depay = gst::ElementFactory::make(&self.0.depay_name(), Some("rtpdepay")).map_err(|_| "The depay element of current codec is not available")?;
         let mut decode_elements = Vec::new();
         match self.0 {
             VideoCodec::H264 => {

@@ -16,7 +16,7 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::{Arc, Mutex}, fmt::Debug};
+use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::{Arc, Mutex}, fmt::Debug, time::Duration};
 
 use glib::{MainContext, Sender, clone};
 use gst::{Pipeline, prelude::*};
@@ -180,21 +180,22 @@ impl MicroModel for SlaveVideoModel {
                 futures.push(promise.future());
                 let promise = Mutex::new(Some(promise));
                 if let Some(pipeline) = self.pipeline.take() {
-                    let sinkpad = pipeline.by_name("display").unwrap().sink_pads().into_iter().next().unwrap();
-                    pipeline.send_event(gst::event::Eos::new());
+                    let sinkpad = pipeline.by_name("display").unwrap().static_pad("sink").unwrap();
                     sinkpad.add_probe(gst::PadProbeType::EVENT_BOTH, move |_pad, info| {
                         match &info.data {
                             Some(gst::PadProbeData::Event(event)) => {
                                 if let gst::EventView::Eos(_) = event.view() {
                                     promise.lock().unwrap().take().unwrap().success(());
+                                    gst::PadProbeReturn::Remove
+                                } else {
+                                    gst::PadProbeReturn::Pass
                                 }
                             },
-                            _ => (),
+                            _ => gst::PadProbeReturn::Pass,
                         }
-                        gst::PadProbeReturn::Remove
                     });
-                    if pipeline.current_state() == gst::State::Playing {
-                        Future::sequence(futures.into_iter()).for_each(clone!(@strong parent_sender => move |_| {
+                    if pipeline.current_state() == gst::State::Playing && pipeline.send_event(gst::event::Eos::new()) {
+                        Future::sequence(futures.into_iter()).for_each(clone!(@strong parent_sender, @weak pipeline => move |_| {
                             send!(parent_sender, SlaveMsg::PollingChanged(false));
                             pipeline.set_state(gst::State::Null).unwrap();
                         }));
