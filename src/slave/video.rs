@@ -123,8 +123,14 @@ impl ToString for VideoCodec {
 }
 
 impl VideoCodec {
-    fn name(&self) -> String {
-        self.to_string().to_lowercase()
+    fn name(&self) -> &'static str {
+        match self {
+            VideoCodec::H264 => "h264",
+            VideoCodec::H265 => "h265",
+            VideoCodec::VP8 => "vp8",
+            VideoCodec::VP9 => "vp9",
+            VideoCodec::AV1 => "av1",
+        }
     }
 
     fn depay_name(&self) -> String {
@@ -481,9 +487,6 @@ pub fn attach_pipeline_callback(pipeline: &Pipeline, sender: Sender<Mat>, config
     let appsink = pipeline.by_name("display").unwrap().dynamic_cast::<gst_app::AppSink>().unwrap();
     appsink.set_callbacks(
         gst_app::AppSinkCallbacks::builder()
-        // .new_event(move |appsink| {
-        //     Ok(gst::FlowSuccess::Ok)
-        // }) // gstreamer 1.19
             .new_sample(clone!(@strong frame_size => move |appsink| {
                 let (width, height) = frame_size.lock().unwrap().ok_or(gst::FlowError::Flushing)?;
                 let sample = appsink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
