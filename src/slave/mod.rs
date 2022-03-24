@@ -346,6 +346,7 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                     set_flap_position: PackType::End,
                     set_separator = Some(&Separator) {},
                     set_content = Some(&Overlay) {
+                        set_width_request: 640,
                         set_child: Some(model.video.root_widget()),
                         add_overlay = &GtkBox {
                             set_valign: Align::Start,

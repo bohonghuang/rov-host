@@ -124,6 +124,7 @@ impl MicroWidgets<SlaveConfigModel> for SlaveConfigWidgets {
         window = GtkBox {
             add_css_class: "background",
             set_orientation: Orientation::Horizontal,
+            set_hexpand: false,
             append = &Separator {
                 set_orientation: Orientation::Horizontal,
             },

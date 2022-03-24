@@ -229,7 +229,7 @@ impl VideoDecoder {
     }
     
     pub fn gst_main_elements(&self) -> Result<(Vec<Element>, Vec<Element>), String> {
-        let depay = gst::ElementFactory::make(&self.0.depay_name(), Some("rtpdepay")).map_err(|_| "The depay element of current codec is not available")?;
+        let depay = gst::ElementFactory::make(&self.0.depay_name(), Some("rtpdepay")).map_err(|_| format!("Missing element: {}", &self.0.depay_name()))?;
         let mut decode_elements = Vec::new();
         match self.0 {
             VideoCodec::H264 => {
@@ -324,12 +324,11 @@ pub fn disconnect_elements_to_pipeline(pipeline: &Pipeline, (output_tee, teepad)
                     promise.lock().unwrap().take().unwrap().success(());
                     PadProbeReturn::Remove
                 } else {
-                    PadProbeReturn::Ok
+                    PadProbeReturn::Pass
                 }
             },
-            _ => PadProbeReturn::Ok,
+            _ => PadProbeReturn::Pass,
         }
-        
     });
     first_sinkpad.send_event(gst::event::Eos::new());
     let future = future.map(clone!(@strong pipeline => move |_| {

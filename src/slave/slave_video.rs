@@ -16,7 +16,7 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::{Arc, Mutex}, fmt::Debug, time::Duration};
+use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::{Arc, Mutex}, fmt::Debug};
 
 use glib::{MainContext, Sender, clone};
 use gst::{Pipeline, prelude::*};
@@ -201,6 +201,7 @@ impl MicroModel for SlaveVideoModel {
                         }));
                     } else {
                         send!(parent_sender, SlaveMsg::PollingChanged(false));
+                        send!(parent_sender, SlaveMsg::RecordingChanged(false));
                         pipeline.set_state(gst::State::Null).unwrap();
                     }
                 }

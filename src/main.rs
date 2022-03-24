@@ -62,7 +62,7 @@ impl Widgets<AboutModel, AppModel> for AboutWidgets {
             set_copyright: Some("© 2021-2022 集美大学水下智能创新实验室"),
             set_comments: Some("跨平台的水下机器人上位机程序"),
             set_logo_icon_name: Some("input-gaming"),
-            set_version: Some("1.0.0-RC6"),
+            set_version: Some("1.0.0"),
             set_license_type: License::Gpl30,
         }
     }
@@ -337,7 +337,7 @@ impl AppUpdate for AppModel {
                             }
                             self.set_recording(Some(true));
                         } else {
-                            error_message("无法开始同步录制", "请确保所有机位均已启动拉流并未处于录制状态。", window.upgrade().as_ref()).present();
+                            error_message("错误", "无法进行同步录制，请确保所有机位均已启动拉流并未处于录制状态。", window.upgrade().as_ref()).present();
                         }
                     } else {
                         for (_index, component) in self.get_slaves().iter().enumerate() {
