@@ -38,6 +38,12 @@ use crate::preferences::PreferencesModel;
 use crate::slave::{SlaveModel, MyComponent, SlaveMsg, slave_config::SlaveConfigModel, slave_video::SlaveVideoMsg};
 use crate::ui::generic::error_message;
 
+use lazy_static::lazy_static;
+
+lazy_static! {
+    pub static ref OS: os_info::Info = os_info::get();
+}
+
 struct AboutModel {}
 enum AboutMsg {}
 impl Model for AboutModel {
@@ -62,7 +68,7 @@ impl Widgets<AboutModel, AppModel> for AboutWidgets {
             set_copyright: Some("© 2021-2022 集美大学水下智能创新实验室"),
             set_comments: Some("跨平台的水下机器人上位机程序"),
             set_logo_icon_name: Some("input-gaming"),
-            set_version: Some("1.0.0"),
+            set_version: Some("1.0.1"),
             set_license_type: License::Gpl30,
         }
     }
@@ -312,8 +318,7 @@ impl AppUpdate for AppModel {
                 self.set_recording(Some(false));
             },
             AppMsg::PreferencesUpdated(preferences) => {
-                *self.get_preferences().borrow_mut() = preferences;
-                self.set_preferences(self.get_preferences().clone());
+                *self.get_mut_preferences().borrow_mut() = preferences;
             },
             AppMsg::DispatchInputEvent(InputEvent(source, event)) => {
                 for slave in self.slaves.iter() {

@@ -170,7 +170,8 @@ impl MicroModel for SlaveVideoModel {
             SlaveVideoMsg::StopPipeline => {
                 assert!(self.pipeline != None);
                 let mut futures = Vec::<Future<()>>::new();
-                if self.is_recording() {
+                let recording = self.is_recording();
+                if recording {
                     let promise = Promise::new();
                     let future = promise.future();
                     self.update(SlaveVideoMsg::StopRecord(Some(promise)), parent_sender, sender.clone());
@@ -197,6 +198,14 @@ impl MicroModel for SlaveVideoModel {
                     if pipeline.current_state() == gst::State::Playing && pipeline.send_event(gst::event::Eos::new()) {
                         Future::sequence(futures.into_iter()).for_each(clone!(@strong parent_sender, @weak pipeline => move |_| {
                             send!(parent_sender, SlaveMsg::PollingChanged(false));
+                            pipeline.set_state(gst::State::Null).unwrap();
+                        }));
+                        glib::timeout_add_local_once(self.preferences.borrow().get_pipeline_timeout().clone(), clone!(@weak pipeline, @strong parent_sender => move || {
+                            send!(parent_sender, SlaveMsg::PollingChanged(false));
+                            if recording {
+                                send!(parent_sender, SlaveMsg::RecordingChanged(false));
+                            }
+                            send!(parent_sender, SlaveMsg::ShowToastMessage(String::from("等待管道响应超，已将其强制终止。")));
                             pipeline.set_state(gst::State::Null).unwrap();
                         }));
                     } else {

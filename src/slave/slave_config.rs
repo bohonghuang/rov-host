@@ -50,6 +50,8 @@ pub struct SlaveConfigModel {
     pub video_decoder: VideoDecoder,
     #[derivative(Default(value="PreferencesModel::default().default_colorspace_conversion"))]
     pub colorspace_conversion: ColorspaceConversion,
+    #[derivative(Default(value="false"))]
+    pub swap_xy: bool,
 }
 
 impl SlaveConfigModel {
@@ -94,6 +96,7 @@ impl MicroModel for SlaveConfigModel {
             SlaveConfigMsg::SetSlaveUrl(url) => self.slave_url = url,
             SlaveConfigMsg::SetVideoDecoderCodec(codec) => self.get_mut_video_decoder().0 = codec,
             SlaveConfigMsg::SetVideoDecoderCodecProvider(provider) => self.get_mut_video_decoder().1 = provider,
+            SlaveConfigMsg::SetSwapXY(swap) => self.set_swap_xy(swap),
         }
         send!(parent_sender, SlaveMsg::ConfigUpdated);
     }
@@ -116,6 +119,7 @@ pub enum SlaveConfigMsg {
     SetColorspaceConversion(ColorspaceConversion),
     SetVideoDecoderCodec(VideoCodec),
     SetVideoDecoderCodecProvider(VideoCodecProvider),
+    SetSwapXY(bool),
 }
 
 #[micro_widget(pub)]
@@ -152,6 +156,23 @@ impl MicroWidgets<SlaveConfigModel> for SlaveConfigWidgets {
                                         }
                                     }
                                 },
+                            },
+                        },
+                        append = &PreferencesGroup {
+                            set_title: "控制",
+                            set_description: Some("调整机位控制选项"),
+                            add = &ActionRow {
+                                set_title: "交换 X/Y 轴",
+                                set_subtitle: "若下位机规定的 X/Y 轴与上位机不一致，可以使用此选项进行交换",
+                                add_suffix: swap_xy_switch = &Switch {
+                                    set_active: track!(model.changed(SlaveConfigModel::swap_xy()), *model.get_swap_xy()),
+                                    set_valign: Align::Center,
+                                    connect_state_set(sender) => move |_switch, state| {
+                                        send!(sender, SlaveConfigMsg::SetSwapXY(state));
+                                        Inhibit(false)
+                                    }
+                                },
+                                set_activatable_widget: Some(&swap_xy_switch),
                             },
                         },
                         append = &PreferencesGroup {

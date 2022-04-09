@@ -16,7 +16,7 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-use std::{fs, path::PathBuf, str::FromStr};
+use std::{fs, path::PathBuf, str::FromStr, time::Duration};
 
 use glib::Sender;
 use gtk::{Align, Entry, Inhibit, Label, SpinButton, StringList, Switch, prelude::*};
@@ -91,6 +91,8 @@ pub struct PreferencesModel {
     pub default_colorspace_conversion: ColorspaceConversion,
     #[derivative(Default(value="64"))]
     pub default_param_tuner_graph_view_point_num_limit: u16,
+    #[derivative(Default(value="Duration::from_secs(10)"))]
+    pub pipeline_timeout: Duration, 
 }
 
 impl PreferencesModel {
@@ -119,6 +121,7 @@ pub enum PreferencesMsg {
     SetDefaultReencodeRecordingVideo(bool),
     SetDefaultVideoUrl(Url),
     SetDefaultSlaveUrl(Url),
+    SetPipelineTimeout(Duration),
     SaveToFile,
     OpenVideoDirectory,
     OpenImageDirectory,
@@ -157,7 +160,7 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                             set_value: track!(model.changed(PreferencesModel::initial_slave_num()), model.initial_slave_num as f64),
                             set_digits: 0,
                             set_valign: Align::Center,
-                            connect_value_changed(sender) => move |button| {
+                            connect_changed(sender) => move |button| {
                                 send!(sender, PreferencesMsg::SetInitialSlaveNum(button.value() as u8));
                             }
                         }
@@ -209,7 +212,7 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                             set_value: track!(model.changed(PreferencesModel::default_input_sending_rate()), model.default_input_sending_rate as f64),
                             set_digits: 0,
                             set_valign: Align::Center,
-                            connect_value_changed(sender) => move |button| {
+                            connect_changed(sender) => move |button| {
                                 send!(sender, PreferencesMsg::SetInputSendingRate(button.value() as u16));
                             }
                         },
@@ -301,6 +304,18 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                             send!(sender, PreferencesMsg::SetDefaultVideoDecoderCodecProvider(VideoCodecProvider::iter().nth(row.selected() as usize).unwrap()))
                         }
                     },
+                    add = &ActionRow {
+                        set_title: "管道等待超时",
+                        set_subtitle: "由于网络等原因，管道可能失去响应，超过设定时间后上位机将强制终止管道。设置为 0 以禁用等待超时。",
+                        add_suffix = &SpinButton::with_range(0.0, 99.0, 1.0) {
+                            set_value: track!(model.changed(PreferencesModel::pipeline_timeout()), model.pipeline_timeout.as_secs() as f64),
+                            set_digits: 0,
+                            set_valign: Align::Center,
+                            connect_changed(sender) => move |button| {
+                                send!(sender, PreferencesMsg::SetPipelineTimeout(Duration::from_secs(button.value() as u64)));
+                            }
+                        }
+                    },
                 },
                 add = &PreferencesGroup {
                     set_title: "截图",
@@ -378,8 +393,8 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                                 send!(sender, PreferencesMsg::SetDefaultVideoEncoderCodecProvider(VideoCodecProvider::iter().nth(row.selected() as usize).unwrap()))
                             }
                         },
-                    }
-                }
+                    },
+                },
             },
             add = &PreferencesPage {
                 set_title: "调试",
@@ -394,7 +409,7 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                             set_value: track!(model.changed(PreferencesModel::default_param_tuner_graph_view_point_num_limit()), model.default_param_tuner_graph_view_point_num_limit as f64),
                             set_digits: 0,
                             set_valign: Align::Center,
-                            connect_value_changed(sender) => move |button| {
+                            connect_changed(sender) => move |button| {
                                 send!(sender, PreferencesMsg::SetDefaultParameterTunerGraphViewPointNumberLimit(button.value() as u16));
                             }
                         }
@@ -436,6 +451,7 @@ impl ComponentUpdate<AppModel> for PreferencesModel {
             PreferencesMsg::SetDefaultReencodeRecordingVideo(reencode) => self.set_default_reencode_recording_video(reencode),
             PreferencesMsg::SetDefaultVideoEncoderCodec(codec) => self.get_mut_default_video_encoder().0 = codec,
             PreferencesMsg::SetDefaultVideoEncoderCodecProvider(provider) => self.get_mut_default_video_encoder().1 = provider,
+            PreferencesMsg::SetPipelineTimeout(timeout) => self.set_pipeline_timeout(timeout),
         }
         send!(parent_sender, AppMsg::PreferencesUpdated(self.clone()));
     }

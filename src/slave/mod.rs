@@ -32,13 +32,14 @@ use adw::{ApplicationWindow, ToastOverlay, Toast, Flap, FlapFoldPolicy};
 use relm4::{WidgetPlus, factory::{FactoryPrototype, FactoryVec, positions::GridPosition}, send, MicroWidgets, MicroModel, MicroComponent};
 use relm4_macros::micro_widget;
 
+use os_info::Type as OSType;
 use serde::{Serialize, Deserialize};
 use derivative::*;
 
 use crate::{input::{InputSource, InputSourceEvent, InputSystem}, slave::param_tuner::SlaveParameterTunerMsg};
 use crate::preferences::PreferencesModel;
 use crate::ui::generic::error_message;
-use crate::AppMsg;
+use crate::{OS, AppMsg};
 use self::{param_tuner::SlaveParameterTunerModel, slave_config::{SlaveConfigModel, SlaveConfigMsg}, slave_video::{SlaveVideoModel, SlaveVideoMsg}, firmware_update::SlaveFirmwareUpdaterModel};
 
 #[tracker::track(pub)]
@@ -124,19 +125,36 @@ pub enum SlaveStatusClass {
 
 impl SlaveStatusClass {
     pub fn from_button(button: u8) -> Option<SlaveStatusClass> {
-        match button {
-            7 => Some(SlaveStatusClass::DepthLocked),
-            8 => Some(SlaveStatusClass::DirectionLocked),
-            _ => None,
+        match (*OS).os_type() {
+            OSType::Macos => None,
+            OSType::Windows => {
+                None
+            },
+            _ => {              // GNU/Linux
+                match button {
+                    7 => Some(SlaveStatusClass::DepthLocked),
+                    8 => Some(SlaveStatusClass::DirectionLocked),
+                    _ => None,
+                }
+            }
         }
     }
+    
     pub fn from_axis(axis: u8) -> Option<SlaveStatusClass> {
-        match axis {
-            0 => Some(SlaveStatusClass::MotionX),
-            1 => Some(SlaveStatusClass::MotionY),
-            2 => Some(SlaveStatusClass::MotionRotate),
-            3 => Some(SlaveStatusClass::MotionZ),
-            _ => None
+        match (*OS).os_type() {
+            OSType::Macos => None,
+            OSType::Windows => {
+                None
+            },
+            _ => {              // GNU/Linux
+                match axis {
+                    0 => Some(SlaveStatusClass::MotionX),
+                    1 => Some(SlaveStatusClass::MotionY),
+                    2 => Some(SlaveStatusClass::MotionRotate),
+                    3 => Some(SlaveStatusClass::MotionZ),
+                    _ => None
+                }
+            }
         }
     }
 }
@@ -551,7 +569,7 @@ async fn tcp_main_handler(input_rate: u16,
             }
             if *idle.lock().await {
                 if current_millis() - *last_action_timestamp.lock().await >= IDLE_TIME_MILLIS {
-                    if let Err(err) = tcp_stream.write_all("{}".as_bytes()).await {
+                    if let Err(err) = tcp_stream.write_all("{ \"x\": 0.0, \"y\": 0.0, \"z\": 0.0, \"rot\": 0.0 }".as_bytes()).await {
                         tcp_sender.send(SlaveTcpMsg::ConnectionLost(err)).await.unwrap_or_default();
                         break;
                     }
@@ -746,7 +764,11 @@ impl MicroModel for SlaveModel {
                     },
                 }
                 if let Some(sender) = self.get_tcp_msg_sender() {
-                    match sender.try_send(SlaveTcpMsg::ControlUpdated(ControlPacket::from_status_map(&self.get_status().lock().unwrap()))) {
+                    let mut control_packet = ControlPacket::from_status_map(&self.get_status().lock().unwrap());
+                    if *self.config.model().get_swap_xy() {
+                        std::mem::swap(&mut control_packet.x, &mut control_packet.y);
+                    }
+                    match sender.try_send(SlaveTcpMsg::ControlUpdated(control_packet)) {
                         Ok(_) => (),
                         Err(err) => println!("Cannot send control input: {}", err.to_string()),
                     }
