@@ -340,7 +340,7 @@ pub fn disconnect_elements_to_pipeline(pipeline: &Pipeline, (output_tee, teepad)
     Ok(future)
 }
 
-pub fn create_pipeline(source: VideoSource, colorspace_conversion: ColorspaceConversion, decoder: VideoDecoder) -> Result<gst::Pipeline, String> {
+pub fn create_pipeline(source: VideoSource, colorspace_conversion: ColorspaceConversion, decoder: VideoDecoder, appsink_queue_leaky_enabled: bool) -> Result<gst::Pipeline, String> {
     let pipeline = gst::Pipeline::new(None);
     let video_src = source.gst_element()?;
     let appsink = gst::ElementFactory::make("appsink", Some("display")).map_err(|_| "Missing element: appsink")?;
@@ -418,7 +418,9 @@ pub fn create_pipeline(source: VideoSource, colorspace_conversion: ColorspaceCon
         },
         _ => return Err("Missing decoder element".to_string()),
     }
-    queue_to_app.set_property_from_value("leaky", &EnumClass::new(queue_to_app.property_type("leaky").unwrap()).unwrap().to_value(2).unwrap());
+    if appsink_queue_leaky_enabled {
+        queue_to_app.set_property_from_value("leaky", &EnumClass::new(queue_to_app.property_type("leaky").unwrap()).unwrap().to_value(2).unwrap());
+    }
     // appsink.set_property("sync", true);
     tee_source.request_pad_simple("src_%u").unwrap().link(&queue_to_decode.static_pad("sink").unwrap()).map_err(|_| "Cannot link tee to decoder queue")?;
     tee_decoded.request_pad_simple("src_%u").unwrap().link(&queue_to_app.static_pad("sink").unwrap()).map_err(|_| "Cannot link tee to appsink queue")?;

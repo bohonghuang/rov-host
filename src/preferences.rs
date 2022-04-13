@@ -92,7 +92,9 @@ pub struct PreferencesModel {
     #[derivative(Default(value="64"))]
     pub default_param_tuner_graph_view_point_num_limit: u16,
     #[derivative(Default(value="Duration::from_secs(10)"))]
-    pub pipeline_timeout: Duration, 
+    pub pipeline_timeout: Duration,
+    #[derivative(Default(value="false"))]
+    pub appsink_queue_leaky_enabled: bool,
 }
 
 impl PreferencesModel {
@@ -119,6 +121,7 @@ pub enum PreferencesMsg {
     SetDefaultParameterTunerGraphViewPointNumberLimit(u16),
     SetDefaultColorspaceConversion(ColorspaceConversion),
     SetDefaultReencodeRecordingVideo(bool),
+    SetAppSinkQueueLeakyEnabled(bool),
     SetDefaultVideoUrl(Url),
     SetDefaultSlaveUrl(Url),
     SetPipelineTimeout(Duration),
@@ -241,13 +244,26 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                         },
                         set_activatable_widget: Some(&default_keep_video_display_ratio_switch),
                     },
+                    add = &ActionRow {
+                        set_title: "启用画面自动跳帧",
+                        set_subtitle: "当机位画面与视频流延迟过大时，自动跳帧以避免延迟提升（需要重启管道以应用设置）",
+                        add_suffix: appsink_queue_leaky_enabled_switch = &Switch {
+                            set_active: track!(model.changed(PreferencesModel::appsink_queue_leaky_enabled()), model.appsink_queue_leaky_enabled),
+                            set_valign: Align::Center,
+                            connect_state_set(sender) => move |_switch, state| {
+                                send!(sender, PreferencesMsg::SetAppSinkQueueLeakyEnabled(state));
+                                Inhibit(false)
+                            }
+                        },
+                        set_activatable_widget: Some(&appsink_queue_leaky_enabled_switch),
+                    },
                 },
                 add = &PreferencesGroup {
                     set_title: "管道",
                     set_description: Some("配置拉流以及录制所使用的管道"),
                     add = &ActionRow {
-                        set_title: "默认拉流 URL",
-                        set_subtitle: "第一机位拉流使用的默认 URL，其他机位会自动累加端口",
+                        set_title: "默认视频 URL",
+                        set_subtitle: "第一机位使用的视频 URL，其他机位会自动累加端口",
                         add_suffix = &Entry {
                             set_text: track!(model.changed(PreferencesModel::default_video_url()), model.get_default_video_url().to_string().as_str()),
                             set_valign: Align::Center,
@@ -276,7 +292,7 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                     },
                     add = &ComboRow {
                         set_title: "默认解码器",
-                        set_subtitle: "拉流时默认使用的解码器",
+                        set_subtitle: "指定解码视频流默认使用的解码器",
                         set_model: Some(&{
                             let model = StringList::new(&[]);
                             for value in VideoCodec::iter() {
@@ -291,7 +307,7 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                     },
                     add = &ComboRow {
                         set_title: "默认解码器接口",
-                        set_subtitle: "拉流时默认调用的解码器接口",
+                        set_subtitle: "指定解码视频流默认使用的解码器接口",
                         set_model: Some(&{
                             let model = StringList::new(&[]);
                             for value in VideoCodecProvider::iter() {
@@ -306,7 +322,7 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                     },
                     add = &ActionRow {
                         set_title: "管道等待超时",
-                        set_subtitle: "由于网络等原因，管道可能失去响应，超过设定时间后上位机将强制终止管道。设置为 0 以禁用等待超时。",
+                        set_subtitle: "由于网络等原因，管道可能失去响应，超过设定时间后上位机将强制终止管道。设置为 0 以禁用等待超时（需要重启管道以应用设置）",
                         add_suffix = &SpinButton::with_range(0.0, 99.0, 1.0) {
                             set_value: track!(model.changed(PreferencesModel::pipeline_timeout()), model.pipeline_timeout.as_secs() as f64),
                             set_digits: 0,
@@ -452,6 +468,7 @@ impl ComponentUpdate<AppModel> for PreferencesModel {
             PreferencesMsg::SetDefaultVideoEncoderCodec(codec) => self.get_mut_default_video_encoder().0 = codec,
             PreferencesMsg::SetDefaultVideoEncoderCodecProvider(provider) => self.get_mut_default_video_encoder().1 = provider,
             PreferencesMsg::SetPipelineTimeout(timeout) => self.set_pipeline_timeout(timeout),
+            PreferencesMsg::SetAppSinkQueueLeakyEnabled(leaky) => self.set_appsink_queue_leaky_enabled(leaky),
         }
         send!(parent_sender, AppMsg::PreferencesUpdated(self.clone()));
     }

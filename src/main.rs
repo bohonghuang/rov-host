@@ -63,7 +63,8 @@ impl Widgets<AboutModel, AppModel> for AboutWidgets {
                 window.hide();
                 Inhibit(true)
             },
-            set_authors: &["黄博宏"],
+            set_website: Some("https://github.com/BohongHuang/rov-host"),
+            set_authors: &["黄博宏 https://bohonghuang.github.io"],
             set_program_name: Some("水下机器人上位机"),
             set_copyright: Some("© 2021-2022 集美大学水下智能创新实验室"),
             set_comments: Some("跨平台的水下机器人上位机程序"),

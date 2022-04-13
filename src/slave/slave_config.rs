@@ -178,6 +178,7 @@ impl MicroWidgets<SlaveConfigModel> for SlaveConfigWidgets {
                         append = &PreferencesGroup {
                             set_title: "画面",
                             set_description: Some("上位机端对画面进行的处理选项"),
+                            
                             add = &ActionRow {
                                 set_title: "保持长宽比",
                                 set_subtitle: "在改变窗口大小的时是否保持画面比例，这可能导致画面无法全屏",
@@ -211,10 +212,10 @@ impl MicroWidgets<SlaveConfigModel> for SlaveConfigWidgets {
                         append = &PreferencesGroup {
                             set_sensitive: track!(model.changed(SlaveConfigModel::polling()), model.get_polling().eq(&Some(false))),
                             set_title: "管道",
-                            set_description: Some("配置拉流以及录制所使用的管道"),
+                            set_description: Some("配置视频流接收以及录制所使用的管道"),
                             add = &ActionRow {
-                                set_title: "拉流 URL",
-                                set_subtitle: "拉取视频流使用的 URL",
+                                set_title: "视频流 URL",
+                                set_subtitle: "配置机位视频流的 URL",
                                 add_suffix = &Entry {
                                     set_text: track!(model.changed(SlaveConfigModel::video_url()), model.get_video_url().to_string().as_str()),
                                     set_valign: Align::Center,
@@ -243,7 +244,7 @@ impl MicroWidgets<SlaveConfigModel> for SlaveConfigWidgets {
                             },
                             add = &ComboRow {
                                 set_title: "解码器",
-                                set_subtitle: "拉流时使用的解码器",
+                                set_subtitle: "解码视频流使用的解码器",
                                 set_model: Some(&{
                                     let model = StringList::new(&[]);
                                     for value in VideoCodec::iter() {
@@ -258,7 +259,7 @@ impl MicroWidgets<SlaveConfigModel> for SlaveConfigWidgets {
                             },
                             add = &ComboRow {
                                 set_title: "解码器接口",
-                                set_subtitle: "拉流时调用的解码器接口",
+                                set_subtitle: "解码视频流使用的解码器接口",
                                 set_model: Some(&{
                                     let model = StringList::new(&[]);
                                     for value in VideoCodecProvider::iter() {

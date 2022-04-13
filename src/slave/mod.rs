@@ -126,11 +126,14 @@ pub enum SlaveStatusClass {
 impl SlaveStatusClass {
     pub fn from_button(button: u8) -> Option<SlaveStatusClass> {
         match (*OS).os_type() {
-            OSType::Macos => None,
             OSType::Windows => {
-                None
+                match button {
+                    8 => Some(SlaveStatusClass::DepthLocked),
+                    9 => Some(SlaveStatusClass::DirectionLocked),
+                    _ => None,
+                }
             },
-            _ => {              // GNU/Linux
+            _ => {
                 match button {
                     7 => Some(SlaveStatusClass::DepthLocked),
                     8 => Some(SlaveStatusClass::DirectionLocked),
@@ -142,11 +145,7 @@ impl SlaveStatusClass {
     
     pub fn from_axis(axis: u8) -> Option<SlaveStatusClass> {
         match (*OS).os_type() {
-            OSType::Macos => None,
-            OSType::Windows => {
-                None
-            },
-            _ => {              // GNU/Linux
+            _ => {
                 match axis {
                     0 => Some(SlaveStatusClass::MotionX),
                     1 => Some(SlaveStatusClass::MotionY),
