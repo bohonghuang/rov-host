@@ -153,6 +153,9 @@ impl MicroWidgets<SlaveConfigModel> for SlaveConfigWidgets {
                                     connect_changed(sender) => move |entry| {
                                         if let Ok(url) = Url::from_str(&entry.text()) {
                                             send!(sender, SlaveConfigMsg::SetSlaveUrl(url));
+                                            entry.remove_css_class("error");
+                                        } else {
+                                            entry.add_css_class("error");
                                         }
                                     }
                                 },
@@ -223,6 +226,9 @@ impl MicroWidgets<SlaveConfigModel> for SlaveConfigWidgets {
                                     connect_changed(sender) => move |entry| {
                                         if let Ok(url) = Url::from_str(&entry.text()) {
                                             send!(sender, SlaveConfigMsg::SetVideoUrl(url));
+                                            entry.remove_css_class("error");
+                                        } else {
+                                            entry.add_css_class("error");
                                         }
                                     }
                                 },

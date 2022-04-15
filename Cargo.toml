@@ -1,6 +1,6 @@
 [package]
-name = "rovhost-gtk"
-version = "1.0.1"
+name = "rov-host"
+version = "1.0.2"
 edition = "2021"
 
 [dependencies]

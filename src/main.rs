@@ -69,7 +69,7 @@ impl Widgets<AboutModel, AppModel> for AboutWidgets {
             set_copyright: Some("© 2021-2022 集美大学水下智能创新实验室"),
             set_comments: Some("跨平台的水下机器人上位机程序"),
             set_logo_icon_name: Some("input-gaming"),
-            set_version: Some("1.0.1"),
+            set_version: Some(env!("CARGO_PKG_VERSION")),
             set_license_type: License::Gpl30,
         }
     }

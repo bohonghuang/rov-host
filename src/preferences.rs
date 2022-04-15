@@ -81,7 +81,7 @@ pub struct PreferencesModel {
     pub default_video_encoder: VideoEncoder,
     #[derivative(Default(value="Url::from_str(\"tcp://192.168.137.219:8888\").unwrap()"))]
     pub default_slave_url: Url,
-    #[derivative(Default(value="Url::from_str(\"udp://127.0.0.1:5600\").unwrap()"))]
+    #[derivative(Default(value="Url::from_str(\"rtp://127.0.0.1:5600\").unwrap()"))]
     pub default_video_url: Url,
     #[derivative(Default(value="60"))]
     pub default_input_sending_rate: u16,
@@ -186,6 +186,9 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                             connect_changed(sender) => move |entry| {
                                 if let Ok(url) = Url::from_str(&entry.text()) {
                                     send!(sender, PreferencesMsg::SetDefaultSlaveUrl(url));
+                                    entry.remove_css_class("error");
+                                } else {
+                                    entry.add_css_class("error");
                                 }
                             }
                          },
@@ -271,6 +274,9 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                             connect_changed(sender) => move |entry| {
                                 if let Ok(url) = Url::from_str(&entry.text()) {
                                     send!(sender, PreferencesMsg::SetDefaultVideoUrl(url));
+                                    entry.remove_css_class("error");
+                                } else {
+                                    entry.add_css_class("error");
                                 }
                             }
                         },
