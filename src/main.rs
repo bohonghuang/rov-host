@@ -189,6 +189,8 @@ impl Widgets<AppModel, ()> for AppWidgets {
                         set_description: Some("请点击标题栏右侧按钮添加机位"),
                     },
                     add_child: slaves_page = &Grid {
+                        set_column_homogeneous: true,
+                        set_row_homogeneous: true,
                         factory!(model.slaves),
                     },
                 },

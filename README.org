@@ -17,11 +17,13 @@ You should have received a copy of the GNU General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 #+END_COMMENT
 #+TITLE: 水下机器人上位机
+#+LATEX_HEADER: \hypersetup{colorlinks=true,linkcolor=black}
+#+OPTIONS: AUTHOR:nil DATE:nil
 #+AUTHOR: Bohong Huang
 [[./documents/screenshot.png]]
 * 特性
 - 使用 [[https://www.rust-lang.org][Rust]] 进行高性能、内存安全的应用程序的开发
-- 基于 [[https://gtk.org][GTK4]]/[[https://gitlab.gnome.org/GNOME/libadwaita][Libadwaita]] 构建现代的[[https://wikipedia.org/wiki/Graphical_user_interface][图形用户界面]]
+- 基于 [[https://gtk.org][GTK4]]/[[https://gitlab.gnome.org/GNOME/libadwaita][libadwaita]] 构建现代的[[https://wikipedia.org/wiki/Graphical_user_interface][图形用户界面]]
   - 跨平台
     - [[https://wikipedia.org/wiki/Microsoft_Windows][Microsoft Windows]]
     - [[https://wikipedia.org/wiki/MacOS][MacOS]]
@@ -29,16 +31,30 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   - 全屏模式
   - 夜间模式
 - 通过 [[https://www.libsdl.org][SDL2]] 支持多手柄输入
-- 通过 [[https://gstreamer.freedesktop.org][GStreamer]] 对 [[https://wikipedia.org/wiki/Real-time_Transport_Protocol][RTP]] 视频流进行多种格式的实时编解码（支持硬件加速）
+- 通过 [[https://gstreamer.freedesktop.org][GStreamer]] 对视频流进行多种格式的实时编解码
+  - 视频协议
+    - [[https://wikipedia.org/wiki/User_Datagram_Protocol][UDP]]
+    - [[https://wikipedia.org/wiki/Real-time_Transport_Protocol][RTP]]
+    - [[https://wikipedia.org/wiki/Real_Time_Streaming_Protocol][RTSP]] 
   - 视频拉流（解码）
     - [[https://wikipedia.org/wiki/H.264][H.264]]
     - [[https://wikipedia.org/wiki/H.265][H.265]]
+    - [[https://wikipedia.org/wiki/VP8][VP8]]
+    - [[https://wikipedia.org/wiki/VP9][VP9]]
+    - [[https://wikipedia.org/wiki/AV1][AV1]]
   - 视频录制（编码）
     - 不编码（跟随拉取视频流的编码）
     - [[https://wikipedia.org/wiki/H.264][H.264]]
     - [[https://wikipedia.org/wiki/H.265][H.265]]
     - [[https://wikipedia.org/wiki/VP8][VP8]]
     - [[https://wikipedia.org/wiki/VP9][VP9]]
+    - [[https://wikipedia.org/wiki/AV1][AV1]]
+  - 硬件加速
+    - [[https://wikipedia.org/wiki/CUDA][CUDA]]
+      - [[https://wikipedia.org/wiki/Nvidia_NVENC][NVENC]]
+      - [[https://wikipedia.org/wiki/Nvidia_NVDEC][NVDEC]]
+    - [[https://wikipedia.org/wiki/Direct3D][Direct3D]]
+    - [[https://wikipedia.org/wiki/Video_Acceleration_API][Video Acceleration API]]
 - 使用 [[https://opencv.org][OpenCV]] 进行实时图像后处理（图像增强）
 - 支持使用多种图像格式保存经过后处理的图像
   - [[https://wikipedia.org/wiki/JPEG][JPEG]]
@@ -60,7 +76,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   #+END_SRC
 ** 编译依赖
 - [[https://gtk.org][GTK4]]
-- [[https://gitlab.gnome.org/GNOME/libadwaita][Libadwaita]]
+- [[https://gitlab.gnome.org/GNOME/libadwaita][libadwaita]]
 - [[https://www.libsdl.org][SDL2]]
 - [[https://gstreamer.freedesktop.org][GStreamer]] 
 - [[https://opencv.org][OpenCV]]
@@ -76,17 +92,19 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   }
 #+END_SRC
 当前有效的发送命令如下：
-| 命令                        | 描述                   |
-|-----------------------------+------------------------|
-| ~x~                           | 控制机器人左右平移     |
-| ~y~                           | 控制机器人前进或后退   |
-| ~z~                           | 控制机器人的上浮或下沉 |
-| ~set_propeller_values~        | [[设置推进器输出][设置推进器输出]]         |
-| ~set_propeller_parameters~    | [[设置参数][设置推进器参数]]         |
-| ~set_control_loop_parameters~ | [[设置参数][设置控制环参数]]         |
-| ~save_parameters~             | 保存参数               |
-| ~load_parameters~             | 请求读取参数           |
-| ~firmware_update~             | 进行固件更新           |
+| 命令                        | 描述                    |
+|-----------------------------+-------------------------|
+| ~x~                           | 控制机器人左右平移      |
+| ~y~                           | 控制机器人前进或后退    |
+| ~z~                           | 控制机器人的上浮或下沉  |
+| ~set_debug_mode_enabled~      | 启用/禁用下位机[[调试模式][调试模式]] |
+| ~set_propeller_values~        | [[设置推进器输出][设置推进器输出]]          |
+| ~set_propeller_parameters~    | [[设置参数][设置推进器参数]]          |
+| ~set_control_loop_parameters~ | [[设置参数][设置控制环参数]]          |
+| ~set_pwm_freq_calibration~    | 设置 PWM 频率           |
+| ~save_parameters~             | 保存参数                |
+| ~load_parameters~             | 请求读取参数            |
+| ~firmware_update~             | 进行固件更新            |
 当前有效的接收命令如下：
 | 命令                        | 描述           |
 |-----------------------------+----------------|
@@ -136,29 +154,43 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               "d" : 0.5                // 微分调节
           }
           // ...
-      }
+      },
+      "set_pwm_freq_calibration": 0.01
   }
 #+END_SRC
 *** 读取/保存参数
 **** 读取参数
 上位机向下位机发送：
 #+BEGIN_SRC json
-{ "load_parameters" : null }
+  { "load_parameters" : null }
 #+END_SRC
 下位机接收到该命令后，向上位机发送[[设置参数][设置参数]]数据包。
 **** 保存参数
 上位机向下位机发送：
 #+BEGIN_SRC json
-{ "save_parameters" : null }
+  { "save_parameters" : null }
 #+END_SRC
-下位机接收到该命令后，将 [[https://wikipedia.org/wiki/Random-access_memory][内存]] 中的参数写入 [[https://wikipedia.org/wiki/Non-volatile_memory][非易失性存储器]] 中，以便记忆设置的参数。
+下位机接收到该命令后，将[[https://wikipedia.org/wiki/Random-access_memory][内存]]中的参数写入[[https://wikipedia.org/wiki/Non-volatile_memory][非易失性存储器]]中，以便记忆设置的参数。
+*** 调试模式
+**** 启用调试模式
+上位机向下位机发送：
+#+BEGIN_SRC json
+  { "set_debug_mode_enabled": true }
+#+END_SRC
+下位机收到命令后将启用调试模式。
+**** 禁用调试模式
+上位机向下位机发送：
+#+BEGIN_SRC json
+  { "set_debug_mode_enabled": false }
+#+END_SRC
+下位机收到命令后将禁用调试模式。
 *** 固件更新
 上位机先向下位机发送：
 #+BEGIN_SRC json
   {
       "firmware_update": {
           "size"        : 12345678,                          // 数据包大小
-          "compression" : "gzip",                            // 压缩方式："gzip" 、"none"
+          "compression" : "none",                            // 压缩方式："gzip" 、"none"
           "md5"         : "3f89ba32a56cb03b5d4e93ed2d033f75" // MD5 校验
       }
   }

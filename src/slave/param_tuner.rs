@@ -42,6 +42,7 @@ pub enum SlaveParameterTunerMsg {
     SetP(usize, f64),
     SetI(usize, f64),
     SetD(usize, f64),
+    SetPwmFreqCalibration(f64),
     ResetParameters,
     ApplyParameters,
     StartDebug(TcpStream),
@@ -183,6 +184,8 @@ impl ControlLoopModel {
 #[derive(Debug, Derivative)]
 #[derivative(Default)]
 pub struct SlaveParameterTunerModel {
+    #[derivative(Default(value="0.0"))]
+    pwm_frequency_calibration: f64,
     #[no_eq]
     #[derivative(Default(value="FactoryVec::new()"))]
     propellers: FactoryVec<PropellerModel>,
@@ -429,6 +432,38 @@ impl MicroWidgets<SlaveParameterTunerModel> for SlaveParameterTunerWidgets {
                 set_hexpand: true,
                 set_vexpand: true,
                 set_can_focus: false,
+                add: group_pwm = &PreferencesGroup {
+                    set_title: "PWM 控制器",
+                    add = &FlowBox {
+                        set_activate_on_single_click: false,
+                        set_valign: Align::Start,
+                        set_row_spacing: 12,
+                        set_selection_mode: SelectionMode::None,
+                        insert(-1) = &PreferencesGroup {
+                            add = &ActionRow {
+                                set_title: "频率校准",
+                                add_suffix = &SpinButton::with_range(-0.1, 0.1, 0.0001) {
+                                    set_value: track!(model.changed(SlaveParameterTunerModel::pwm_frequency_calibration()), *model.get_pwm_frequency_calibration() as f64),
+                                    set_digits: 4,
+                                    set_valign: Align::Center,
+                                    connect_value_changed(sender) => move |button| {
+                                        send!(sender, SlaveParameterTunerMsg::SetPwmFreqCalibration(button.value()));
+                                    }
+                                },
+                            },
+                            add = &ActionRow {
+                                set_child = Some(&Scale::with_range(Orientation::Horizontal, -0.1, 0.1, 0.0001)) {
+                                    set_width_request: CARD_MIN_WIDTH,
+                                    set_round_digits: 4,
+                                    set_value: track!(model.changed(SlaveParameterTunerModel::pwm_frequency_calibration()), *model.get_pwm_frequency_calibration() as f64),
+                                    connect_value_changed(sender) => move |scale| {
+                                        send!(sender, SlaveParameterTunerMsg::SetPwmFreqCalibration(scale.value()));
+                                    }
+                                }
+                            },
+                        },
+                    },
+                },
                 add: group_propeller = &PreferencesGroup {
                     set_title: "推进器参数",
                     add = &FlowBox {
@@ -537,9 +572,15 @@ struct SlaveParameterTunerSetPropellerPacket {
     set_propeller_values: HashMap<String, i8>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct SlaveParameterTunerSetDebugModeEnabledPacket {
+    set_debug_mode_enabled: bool,
+}
+
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SlaveParameterTunerPacket {
+    set_pwm_freq_calibration: f64,
     set_propeller_parameters: HashMap<String, Propeller>,
     set_control_loop_parameters: HashMap<String, ControlLoop>,
 }
@@ -563,6 +604,7 @@ struct SlaveParameterTunerUpdatePacket {
 enum SlaveParameterTunerTcpMsg {
     UploadParameters(SlaveParameterTunerPacket),
     RequestParameters,
+    SetDebugModeEnabled(bool),
     PreviewPropeller(String, i8),
     PreviewPropellers(HashMap<String, i8>),
     ConnectionLost(IOError),
@@ -681,6 +723,13 @@ async fn parameter_tuner_handler(mut tcp_stream: TcpStream,
                         tcp_stream.write_all(json_string.as_bytes()).await?;
                         tcp_stream.flush().await?;
                     },
+                    SlaveParameterTunerTcpMsg::SetDebugModeEnabled(enabled) => {
+                        let json_string = serde_json::to_string(&SlaveParameterTunerSetDebugModeEnabledPacket {
+                            set_debug_mode_enabled: enabled,
+                        }).unwrap();
+                        tcp_stream.write_all(json_string.as_bytes()).await?;
+                        tcp_stream.flush().await?;
+                    },
                 }
             },
             Err(_) => (),
@@ -763,6 +812,7 @@ impl MicroModel for SlaveParameterTunerModel {
             SlaveParameterTunerMsg::ApplyParameters => {
                 if let Some(msg_sender) = self.get_tcp_msg_sender() {
                     msg_sender.try_send(SlaveParameterTunerTcpMsg::UploadParameters(SlaveParameterTunerPacket {
+                        set_pwm_freq_calibration: self.pwm_frequency_calibration,
                         set_propeller_parameters: PropellerModel::vec_to_map(self.propellers.iter().collect()),
                         set_control_loop_parameters: ControlLoopModel::vec_to_map(self.control_loops.iter().collect()),
                     })).unwrap_or(());
@@ -774,6 +824,7 @@ impl MicroModel for SlaveParameterTunerModel {
             SlaveParameterTunerMsg::StartDebug(tcp_stream) => {
                 let (tcp_sender, tcp_receiver) = async_std::channel::bounded::<SlaveParameterTunerTcpMsg>(128);
                 self.tcp_msg_sender = Some(tcp_sender.clone());
+                tcp_sender.try_send(SlaveParameterTunerTcpMsg::SetDebugModeEnabled(true)).unwrap_or(());
                 tcp_sender.try_send(SlaveParameterTunerTcpMsg::RequestParameters).unwrap_or(());
                 let sender = sender.clone();
                 let handle = task::spawn(parameter_tuner_handler(tcp_stream, tcp_sender, tcp_receiver, sender));
@@ -781,6 +832,7 @@ impl MicroModel for SlaveParameterTunerModel {
             },
             SlaveParameterTunerMsg::StopDebug => {
                 if let Some(msg_sender) = self.get_tcp_msg_sender() {
+                    msg_sender.try_send(SlaveParameterTunerTcpMsg::SetDebugModeEnabled(false)).unwrap_or(());
                     msg_sender.try_send(SlaveParameterTunerTcpMsg::Terminate).unwrap_or_default();
                     self.set_tcp_msg_sender(None);
                     self.set_stopped(true);
@@ -799,7 +851,8 @@ impl MicroModel for SlaveParameterTunerModel {
                     }
                 }
             },
-            SlaveParameterTunerMsg::ParametersReceived(SlaveParameterTunerPacket { set_propeller_parameters: propellers, set_control_loop_parameters: control_loops }) => {
+            SlaveParameterTunerMsg::ParametersReceived(SlaveParameterTunerPacket { set_pwm_freq_calibration: pwm_freq_calibration, set_propeller_parameters: propellers, set_control_loop_parameters: control_loops }) => {
+                self.set_pwm_frequency_calibration(pwm_freq_calibration);
                 for index in 0..self.propellers.len() {
                     let propeller_model = self.propellers.get_mut(index).unwrap();
                     if let Some(propeller) = propellers.get(propeller_model.get_key()) {
@@ -817,6 +870,9 @@ impl MicroModel for SlaveParameterTunerModel {
                         control_loop_model.set_d(control_loop.d);
                     }
                 }
+            },
+            SlaveParameterTunerMsg::SetPwmFreqCalibration(cal) => {
+              self.set_pwm_frequency_calibration(cal);
             },
         }
     }
