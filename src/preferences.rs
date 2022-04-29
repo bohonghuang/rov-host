@@ -95,6 +95,8 @@ pub struct PreferencesModel {
     pub pipeline_timeout: Duration,
     #[derivative(Default(value="false"))]
     pub appsink_queue_leaky_enabled: bool,
+    #[derivative(Default(value="false"))]
+    pub default_use_decodebin: bool
 }
 
 impl PreferencesModel {
@@ -121,6 +123,7 @@ pub enum PreferencesMsg {
     SetDefaultParameterTunerGraphViewPointNumberLimit(u16),
     SetDefaultColorspaceConversion(ColorspaceConversion),
     SetDefaultReencodeRecordingVideo(bool),
+    SetDefaultUseDecodebin(bool),
     SetAppSinkQueueLeakyEnabled(bool),
     SetDefaultVideoUrl(Url),
     SetDefaultSlaveUrl(Url),
@@ -281,50 +284,59 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                             }
                         },
                     },
-                    add = &ComboRow {
-                        set_title: "默认色彩空间转换",
-                        set_subtitle: "设置视频编解码、视频流显示要求的色彩空间转换所使用的默认硬件",
-                        set_model: Some(&{
-                            let model = StringList::new(&[]);
-                            for value in ColorspaceConversion::iter() {
-                                model.append(&value.to_string());
+                    add = &ExpanderRow {
+                        set_title: "默认手动配置管道",
+                        set_show_enable_switch: true,
+                        set_expanded: !*model.get_default_use_decodebin(),
+                        set_enable_expansion: track!(model.changed(PreferencesModel::default_use_decodebin()), !*model.get_default_use_decodebin()),
+                        connect_enable_expansion_notify(sender) => move |expander| {
+                            send!(sender, PreferencesMsg::SetDefaultUseDecodebin(!expander.enables_expansion()));
+                        },
+                        add_row = &ComboRow {
+                            set_title: "默认解码器",
+                            set_subtitle: "指定解码视频流默认使用的解码器",
+                            set_model: Some(&{
+                                let model = StringList::new(&[]);
+                                for value in VideoCodec::iter() {
+                                    model.append(&value.to_string());
+                                }
+                                model
+                            }),
+                            set_selected: track!(model.changed(PreferencesModel::default_video_decoder()), VideoCodec::iter().position(|x| x == model.default_video_decoder.0).unwrap() as u32),
+                            connect_selected_notify(sender) => move |row| {
+                                send!(sender, PreferencesMsg::SetDefaultVideoDecoderCodec(VideoCodec::iter().nth(row.selected() as usize).unwrap()))
                             }
-                            model
-                        }),
-                        set_selected: track!(model.changed(PreferencesModel::default_colorspace_conversion()), ColorspaceConversion::iter().position(|x| x == model.default_colorspace_conversion).unwrap() as u32),
-                        connect_selected_notify(sender) => move |row| {
-                            send!(sender, PreferencesMsg::SetDefaultColorspaceConversion(ColorspaceConversion::iter().nth(row.selected() as usize).unwrap()));
-                        }
-                    },
-                    add = &ComboRow {
-                        set_title: "默认解码器",
-                        set_subtitle: "指定解码视频流默认使用的解码器",
-                        set_model: Some(&{
-                            let model = StringList::new(&[]);
-                            for value in VideoCodec::iter() {
-                                model.append(&value.to_string());
+                        },
+                        add_row = &ComboRow {
+                            set_title: "默认解码器接口",
+                            set_subtitle: "指定解码视频流默认使用的解码器接口",
+                            set_model: Some(&{
+                                let model = StringList::new(&[]);
+                                for value in VideoCodecProvider::iter() {
+                                    model.append(&value.to_string());
+                                }
+                                model
+                            }),
+                            set_selected: track!(model.changed(PreferencesModel::default_video_decoder()), VideoCodecProvider::iter().position(|x| x == model.default_video_decoder.1).unwrap() as u32),
+                            connect_selected_notify(sender) => move |row| {
+                                send!(sender, PreferencesMsg::SetDefaultVideoDecoderCodecProvider(VideoCodecProvider::iter().nth(row.selected() as usize).unwrap()))
                             }
-                            model
-                        }),
-                        set_selected: track!(model.changed(PreferencesModel::default_video_decoder()), VideoCodec::iter().position(|x| x == model.default_video_decoder.0).unwrap() as u32),
-                        connect_selected_notify(sender) => move |row| {
-                            send!(sender, PreferencesMsg::SetDefaultVideoDecoderCodec(VideoCodec::iter().nth(row.selected() as usize).unwrap()))
-                        }
-                    },
-                    add = &ComboRow {
-                        set_title: "默认解码器接口",
-                        set_subtitle: "指定解码视频流默认使用的解码器接口",
-                        set_model: Some(&{
-                            let model = StringList::new(&[]);
-                            for value in VideoCodecProvider::iter() {
-                                model.append(&value.to_string());
+                        },
+                        add_row = &ComboRow {
+                            set_title: "默认色彩空间转换",
+                            set_subtitle: "设置视频编解码、视频流显示要求的色彩空间转换所使用的默认硬件",
+                            set_model: Some(&{
+                                let model = StringList::new(&[]);
+                                for value in ColorspaceConversion::iter() {
+                                    model.append(&value.to_string());
+                                }
+                                model
+                            }),
+                            set_selected: track!(model.changed(PreferencesModel::default_colorspace_conversion()), ColorspaceConversion::iter().position(|x| x == model.default_colorspace_conversion).unwrap() as u32),
+                            connect_selected_notify(sender) => move |row| {
+                                send!(sender, PreferencesMsg::SetDefaultColorspaceConversion(ColorspaceConversion::iter().nth(row.selected() as usize).unwrap()));
                             }
-                            model
-                        }),
-                        set_selected: track!(model.changed(PreferencesModel::default_video_decoder()), VideoCodecProvider::iter().position(|x| x == model.default_video_decoder.1).unwrap() as u32),
-                        connect_selected_notify(sender) => move |row| {
-                            send!(sender, PreferencesMsg::SetDefaultVideoDecoderCodecProvider(VideoCodecProvider::iter().nth(row.selected() as usize).unwrap()))
-                        }
+                        },
                     },
                     add = &ActionRow {
                         set_title: "管道等待超时",
@@ -378,7 +390,7 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                         }
                     },
                     add = &ExpanderRow {
-                        set_title: "录制时重新编码",
+                        set_title: "默认录制时重新编码",
                         set_show_enable_switch: true,
                         set_expanded: *model.get_default_reencode_recording_video(),
                         set_enable_expansion: track!(model.changed(PreferencesModel::default_reencode_recording_video()), *model.get_default_reencode_recording_video()),
@@ -433,10 +445,10 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                             set_valign: Align::Center,
                             connect_changed(sender) => move |button| {
                                 send!(sender, PreferencesMsg::SetDefaultParameterTunerGraphViewPointNumberLimit(button.value() as u16));
-                            }
-                        }
-                    }
-                }
+                            },
+                        },
+                    },
+                },
             },
         }
     }
@@ -466,15 +478,26 @@ impl ComponentUpdate<AppModel> for PreferencesModel {
             PreferencesMsg::OpenVideoDirectory => gtk::show_uri(None as Option<&PreferencesWindow>, glib::filename_to_uri(self.get_video_save_path().to_str().unwrap(), None).unwrap().as_str(), gdk::CURRENT_TIME),
             PreferencesMsg::OpenImageDirectory => gtk::show_uri(None as Option<&PreferencesWindow>, glib::filename_to_uri(self.get_image_save_path().to_str().unwrap(), None).unwrap().as_str(), gdk::CURRENT_TIME),
             PreferencesMsg::SetDefaultColorspaceConversion(conversion) => self.set_default_colorspace_conversion(conversion),
-            PreferencesMsg::SetDefaultVideoUrl(url) => self.default_video_url = url,
-            PreferencesMsg::SetDefaultSlaveUrl(url) => self.default_slave_url = url,
+            PreferencesMsg::SetDefaultVideoUrl(url) => self.set_default_video_url(url),
+            PreferencesMsg::SetDefaultSlaveUrl(url) => self.set_default_slave_url(url),
             PreferencesMsg::SetDefaultVideoDecoderCodec(codec) => self.get_mut_default_video_decoder().0 = codec,
             PreferencesMsg::SetDefaultVideoDecoderCodecProvider(provider) => self.get_mut_default_video_decoder().1 = provider,
-            PreferencesMsg::SetDefaultReencodeRecordingVideo(reencode) => self.set_default_reencode_recording_video(reencode),
+            PreferencesMsg::SetDefaultReencodeRecordingVideo(reencode) => {
+                if !reencode {
+                    self.set_default_use_decodebin(false);
+                }
+                self.set_default_reencode_recording_video(reencode)
+            },
             PreferencesMsg::SetDefaultVideoEncoderCodec(codec) => self.get_mut_default_video_encoder().0 = codec,
             PreferencesMsg::SetDefaultVideoEncoderCodecProvider(provider) => self.get_mut_default_video_encoder().1 = provider,
             PreferencesMsg::SetPipelineTimeout(timeout) => self.set_pipeline_timeout(timeout),
             PreferencesMsg::SetAppSinkQueueLeakyEnabled(leaky) => self.set_appsink_queue_leaky_enabled(leaky),
+            PreferencesMsg::SetDefaultUseDecodebin(use_decodebin) => {
+                if use_decodebin {
+                    self.set_default_reencode_recording_video(true);
+                }
+                self.set_default_use_decodebin(use_decodebin);
+            },
         }
         send!(parent_sender, AppMsg::PreferencesUpdated(self.clone()));
     }

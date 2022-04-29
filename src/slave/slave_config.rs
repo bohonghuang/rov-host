@@ -20,7 +20,7 @@ use std::{str::FromStr, fmt::Debug};
 
 use glib::Sender;
 use gtk::{Align, Box as GtkBox, Entry, Inhibit, Orientation, ScrolledWindow, Separator, StringList, Switch, Viewport, prelude::*};
-use adw::{ActionRow, PreferencesGroup, prelude::*, ComboRow};
+use adw::{ActionRow, PreferencesGroup, prelude::*, ComboRow, ExpanderRow};
 use relm4::{WidgetPlus, send, MicroModel, MicroWidgets};
 use relm4_macros::micro_widget;
 
@@ -52,6 +52,8 @@ pub struct SlaveConfigModel {
     pub colorspace_conversion: ColorspaceConversion,
     #[derivative(Default(value="false"))]
     pub swap_xy: bool,
+    #[derivative(Default(value="PreferencesModel::default().default_use_decodebin"))]
+    pub use_decodebin: bool,
 }
 
 impl SlaveConfigModel {
@@ -69,6 +71,7 @@ impl SlaveConfigModel {
             colorspace_conversion: preferences.get_default_colorspace_conversion().clone(),
             video_decoder: preferences.get_default_video_decoder().clone(),
             keep_video_display_ratio: preferences.get_default_keep_video_display_ratio().clone(),
+            use_decodebin: preferences.get_default_use_decodebin().clone(),
             ..Default::default()
         }
     }
@@ -97,6 +100,7 @@ impl MicroModel for SlaveConfigModel {
             SlaveConfigMsg::SetVideoDecoderCodec(codec) => self.get_mut_video_decoder().0 = codec,
             SlaveConfigMsg::SetVideoDecoderCodecProvider(provider) => self.get_mut_video_decoder().1 = provider,
             SlaveConfigMsg::SetSwapXY(swap) => self.set_swap_xy(swap),
+            SlaveConfigMsg::SetUsePlaybin(use_decodebin) => self.set_use_decodebin(use_decodebin),
         }
         send!(parent_sender, SlaveMsg::ConfigUpdated);
     }
@@ -120,6 +124,7 @@ pub enum SlaveConfigMsg {
     SetVideoDecoderCodec(VideoCodec),
     SetVideoDecoderCodecProvider(VideoCodecProvider),
     SetSwapXY(bool),
+    SetUsePlaybin(bool),
 }
 
 #[micro_widget(pub)]
@@ -233,50 +238,59 @@ impl MicroWidgets<SlaveConfigModel> for SlaveConfigWidgets {
                                     }
                                 },
                             },
-                            add = &ComboRow {
-                                set_title: "色彩空间转换",
-                                set_subtitle: "设置视频编解码、视频流显示要求的色彩空间转换所使用的硬件",
-                                set_model: Some(&{
-                                    let model = StringList::new(&[]);
-                                    for value in ColorspaceConversion::iter() {
-                                        model.append(&value.to_string());
+                            add = &ExpanderRow {
+                                set_title: "手动配置管道",
+                                set_show_enable_switch: true,
+                                set_expanded: !*model.get_use_decodebin(),
+                                set_enable_expansion: track!(model.changed(SlaveConfigModel::use_decodebin()), !*model.get_use_decodebin()),
+                                connect_enable_expansion_notify(sender) => move |expander| {
+                                    send!(sender, SlaveConfigMsg::SetUsePlaybin(!expander.enables_expansion()));
+                                },
+                                add_row = &ComboRow {
+                                    set_title: "色彩空间转换",
+                                    set_subtitle: "设置视频编解码、视频流显示要求的色彩空间转换所使用的硬件",
+                                    set_model: Some(&{
+                                        let model = StringList::new(&[]);
+                                        for value in ColorspaceConversion::iter() {
+                                            model.append(&value.to_string());
+                                        }
+                                        model
+                                    }),
+                                    set_selected: track!(model.changed(SlaveConfigModel::colorspace_conversion()), ColorspaceConversion::iter().position(|x| x == model.colorspace_conversion).unwrap() as u32),
+                                    connect_selected_notify(sender) => move |row| {
+                                        send!(sender, SlaveConfigMsg::SetColorspaceConversion(ColorspaceConversion::iter().nth(row.selected() as usize).unwrap()));
                                     }
-                                    model
-                                }),
-                                set_selected: track!(model.changed(SlaveConfigModel::colorspace_conversion()), ColorspaceConversion::iter().position(|x| x == model.colorspace_conversion).unwrap() as u32),
-                                connect_selected_notify(sender) => move |row| {
-                                    send!(sender, SlaveConfigMsg::SetColorspaceConversion(ColorspaceConversion::iter().nth(row.selected() as usize).unwrap()));
-                                }
-                            },
-                            add = &ComboRow {
-                                set_title: "解码器",
-                                set_subtitle: "解码视频流使用的解码器",
-                                set_model: Some(&{
-                                    let model = StringList::new(&[]);
-                                    for value in VideoCodec::iter() {
-                                        model.append(&value.to_string());
+                                },
+                                add_row = &ComboRow {
+                                    set_title: "解码器",
+                                    set_subtitle: "解码视频流使用的解码器",
+                                    set_model: Some(&{
+                                        let model = StringList::new(&[]);
+                                        for value in VideoCodec::iter() {
+                                            model.append(&value.to_string());
+                                        }
+                                        model
+                                    }),
+                                    set_selected: track!(model.changed(SlaveConfigModel::video_decoder()), VideoCodec::iter().position(|x| x == model.video_decoder.0).unwrap() as u32),
+                                    connect_selected_notify(sender) => move |row| {
+                                        send!(sender, SlaveConfigMsg::SetVideoDecoderCodec(VideoCodec::iter().nth(row.selected() as usize).unwrap()))
                                     }
-                                    model
-                                }),
-                                set_selected: track!(model.changed(SlaveConfigModel::video_decoder()), VideoCodec::iter().position(|x| x == model.video_decoder.0).unwrap() as u32),
-                                connect_selected_notify(sender) => move |row| {
-                                    send!(sender, SlaveConfigMsg::SetVideoDecoderCodec(VideoCodec::iter().nth(row.selected() as usize).unwrap()))
-                                }
-                            },
-                            add = &ComboRow {
-                                set_title: "解码器接口",
-                                set_subtitle: "解码视频流使用的解码器接口",
-                                set_model: Some(&{
-                                    let model = StringList::new(&[]);
-                                    for value in VideoCodecProvider::iter() {
-                                        model.append(&value.to_string());
-                                    }
-                                    model
-                                }),
-                                set_selected: track!(model.changed(SlaveConfigModel::video_decoder()), VideoCodecProvider::iter().position(|x| x == model.video_decoder.1).unwrap() as u32),
-                                connect_selected_notify(sender) => move |row| {
-                                    send!(sender, SlaveConfigMsg::SetVideoDecoderCodecProvider(VideoCodecProvider::iter().nth(row.selected() as usize).unwrap()))
-                                }
+                                },
+                                add_row = &ComboRow {
+                                    set_title: "解码器接口",
+                                    set_subtitle: "解码视频流使用的解码器接口",
+                                    set_model: Some(&{
+                                        let model = StringList::new(&[]);
+                                        for value in VideoCodecProvider::iter() {
+                                            model.append(&value.to_string());
+                                        }
+                                        model
+                                    }),
+                                    set_selected: track!(model.changed(SlaveConfigModel::video_decoder()), VideoCodecProvider::iter().position(|x| x == model.video_decoder.1).unwrap() as u32),
+                                    connect_selected_notify(sender) => move |row| {
+                                        send!(sender, SlaveConfigMsg::SetVideoDecoderCodecProvider(VideoCodecProvider::iter().nth(row.selected() as usize).unwrap()))
+                                    },
+                                },
                             },
                         },
                     },

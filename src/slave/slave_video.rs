@@ -141,16 +141,17 @@ impl MicroModel for SlaveVideoModel {
                 if let Some(video_source) = VideoSource::from_url(video_url) {
                     let video_decoder = config.get_video_decoder().clone();
                     let colorspace_conversion = config.get_colorspace_conversion().clone();
+                    let use_decodebin = config.get_use_decodebin().clone();
                     let appsink_leaky_enabled = preferences.get_appsink_queue_leaky_enabled().clone();
                     
                     drop(preferences); 
                     drop(config); // 结束 &self 的生命周期
                     
-                    match super::video::create_pipeline(
+                    match if use_decodebin { super::video::create_decodebin_pipeline(video_source, appsink_leaky_enabled) } else { super::video::create_pipeline(
                         video_source,
                         colorspace_conversion,
                         video_decoder,
-                        appsink_leaky_enabled) {
+                        appsink_leaky_enabled) } {
                         Ok(pipeline) => {
                             let sender = sender.clone();
                             let (mat_sender, mat_receiver) = MainContext::channel(glib::PRIORITY_DEFAULT);

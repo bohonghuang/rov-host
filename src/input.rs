@@ -52,7 +52,6 @@ pub struct InputSystem {
     pub event_sender: Rc<RefCell<Option<Sender<InputEvent>>>>,
     pub messsage_sender: Sender<InputSystemMessage>,
     running: Arc<Mutex<bool>>,
-    // joysticks: Rc<RefCell<HashMap<u32, (Joystick, (u16, u16))>>>
 }
 
 impl InputSystem {
@@ -106,23 +105,13 @@ impl InputSystem {
             .num_joysticks()
             .map_err(|e| format!("can't enumerate joysticks: {}", e)).unwrap();
         let mut joysticks: HashMap<u32, (Joystick, (u16, u16))> = (0..available)
-            .filter_map(|id| match self.subsystem.open(id) {
-                Ok(c) => {
-                    println!("Success: opened \"{}\"", c.name());
-                    Some((id, (c, (0, 0))))
-                }
-                Err(e) => {
-                    println!("Failed: {:?}", e);
-                    None
-                }
-            }).collect();
-        
+            .filter_map(|id| self.subsystem.open(id).ok().map(|c| (id, (c, (0, 0))))).collect();
         let sdl = self.sdl.clone();
         let sender = self.event_sender.clone();
         let running = self.running.clone();
         *self.running.lock().unwrap() = true;
         glib::timeout_add_local(Duration::from_millis(16), move || {
-            let mut event_pump = sdl.event_pump().expect("无法读取手柄事件");
+            let mut event_pump = sdl.event_pump().expect("Cannot get event pump from SDL");
             if let Some(sender) = sender.as_ref().borrow().as_ref() {
                 for event in event_pump.poll_iter() {
                     match event {
@@ -131,56 +120,15 @@ impl InputSystem {
                             value: val,
                             which,
                             ..
-                        } => {
-                            // let dead_zone = 2;
-                            // if val > dead_zone || val < -dead_zone {
-                                // println!("Axis {} moved to {}", axis_idx, val);
-                            // } else {
-                                // println!("Axis {} moved to {}", axis_idx, 0);
-                            // }
-                            sender.send(InputEvent(InputSource::Joystick(which), InputSourceEvent::AxisChanged(axis_idx, val))).unwrap();
-                        }
+                        } =>  sender.send(InputEvent(InputSource::Joystick(which), InputSourceEvent::AxisChanged(axis_idx, val))).unwrap(),
                         Event::JoyButtonDown { button_idx, which, .. } => {
-                            // println!("Button {} down", button_idx);
                             let (_joystick, (_lo_freq, _hi_freq)) = joysticks.get_mut(&which).unwrap();
-                            // if button_idx == 0 {
-                            //     *lo_freq = 65535;
-                            // } else if button_idx == 1 {
-                            //     *hi_freq = 65535;
-                            // }
-                            // if button_idx < 4 {
-                            //     match joystick.set_rumble(*lo_freq, *hi_freq, 15000) {
-                            //         Ok(()) => (), // println!("Set rumble to ({}, {})", lo_freq, hi_freq),
-                            //         Err(e) => println!(
-                            //             "Error setting rumble to ({}, {}): {:?}",
-                            //             lo_freq, hi_freq, e
-                            //         ),
-                            //     }
-                            // }
                             sender.send(InputEvent(InputSource::Joystick(which), InputSourceEvent::ButtonChanged(button_idx, true))).unwrap();
-                        }
+                        },
                         Event::JoyButtonUp { button_idx, which, .. } => {
-                            // println!("Button {} up", button_idx);
                             let (_joystick, (_lo_freq, _hi_freq)) = joysticks.get_mut(&which).unwrap();
-                            // if button_idx == 0 {
-                            //     *lo_freq = 65535;
-                            // } else if button_idx == 1 {
-                            //     *hi_freq = 65535;
-                            // }
-                            // if button_idx < 4 {
-                            //     match joystick.set_rumble(*lo_freq, *hi_freq, 15000) {
-                            //         Ok(()) => (), // println!("Set rumble to ({}, {})", lo_freq, hi_freq),
-                            //         Err(e) => println!(
-                            //             "Error setting rumble to ({}, {}): {:?}",
-                            //             lo_freq, hi_freq, e
-                            //         ),
-                            //     }
-                            // }
                             sender.send(InputEvent(InputSource::Joystick(which), InputSourceEvent::ButtonChanged(button_idx, false))).unwrap();
-                        }
-                        Event::JoyHatMotion { hat_idx, state, .. } => {
-                            println!("Hat {} moved to {:?}", hat_idx, state)
-                        }
+                        },
                         Event::Quit { .. } => break,
                         _ => (),
                     }
