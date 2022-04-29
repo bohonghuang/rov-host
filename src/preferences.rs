@@ -94,9 +94,11 @@ pub struct PreferencesModel {
     #[derivative(Default(value="Duration::from_secs(10)"))]
     pub pipeline_timeout: Duration,
     #[derivative(Default(value="false"))]
-    pub appsink_queue_leaky_enabled: bool,
+    pub default_appsink_queue_leaky_enabled: bool,
     #[derivative(Default(value="false"))]
-    pub default_use_decodebin: bool
+    pub default_use_decodebin: bool,
+    #[derivative(Default(value="false"))]
+    pub video_sync_record_use_separate_directory: bool,
 }
 
 impl PreferencesModel {
@@ -124,7 +126,8 @@ pub enum PreferencesMsg {
     SetDefaultColorspaceConversion(ColorspaceConversion),
     SetDefaultReencodeRecordingVideo(bool),
     SetDefaultUseDecodebin(bool),
-    SetAppSinkQueueLeakyEnabled(bool),
+    SetDefaultAppSinkQueueLeakyEnabled(bool),
+    SetVideoSyncRecordUseSeparateDirectory(bool),
     SetDefaultVideoUrl(Url),
     SetDefaultSlaveUrl(Url),
     SetPipelineTimeout(Duration),
@@ -250,19 +253,6 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                         },
                         set_activatable_widget: Some(&default_keep_video_display_ratio_switch),
                     },
-                    add = &ActionRow {
-                        set_title: "启用画面自动跳帧",
-                        set_subtitle: "当机位画面与视频流延迟过大时，自动跳帧以避免延迟提升（需要重启管道以应用设置）",
-                        add_suffix: appsink_queue_leaky_enabled_switch = &Switch {
-                            set_active: track!(model.changed(PreferencesModel::appsink_queue_leaky_enabled()), model.appsink_queue_leaky_enabled),
-                            set_valign: Align::Center,
-                            connect_state_set(sender) => move |_switch, state| {
-                                send!(sender, PreferencesMsg::SetAppSinkQueueLeakyEnabled(state));
-                                Inhibit(false)
-                            }
-                        },
-                        set_activatable_widget: Some(&appsink_queue_leaky_enabled_switch),
-                    },
                 },
                 add = &PreferencesGroup {
                     set_title: "管道",
@@ -283,6 +273,19 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                                 }
                             }
                         },
+                    },
+                    add = &ActionRow {
+                        set_title: "默认启用画面自动跳帧",
+                        set_subtitle: "默认启用自动跳帧，当机位画面与视频流延迟过大时避免延迟提升",
+                        add_suffix: appsink_queue_leaky_enabled_switch = &Switch {
+                            set_active: track!(model.changed(PreferencesModel::default_appsink_queue_leaky_enabled()), *model.get_default_appsink_queue_leaky_enabled()),
+                            set_valign: Align::Center,
+                            connect_state_set(sender) => move |_switch, state| {
+                                send!(sender, PreferencesMsg::SetDefaultAppSinkQueueLeakyEnabled(state));
+                                Inhibit(false)
+                            }
+                        },
+                        set_activatable_widget: Some(&appsink_queue_leaky_enabled_switch),
                     },
                     add = &ExpanderRow {
                         set_title: "默认手动配置管道",
@@ -340,7 +343,7 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                     },
                     add = &ActionRow {
                         set_title: "管道等待超时",
-                        set_subtitle: "由于网络等原因，管道可能失去响应，超过设定时间后上位机将强制终止管道。设置为 0 以禁用等待超时（需要重启管道以应用设置）",
+                        set_subtitle: "由于网络等原因，管道可能失去响应，超过设定时间后上位机将强制终止管道，设置为 0 以禁用等待超时（需要重启管道以应用设置）",
                         add_suffix = &SpinButton::with_range(0.0, 99.0, 1.0) {
                             set_value: track!(model.changed(PreferencesModel::pipeline_timeout()), model.pipeline_timeout.as_secs() as f64),
                             set_digits: 0,
@@ -348,7 +351,10 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                             connect_changed(sender) => move |button| {
                                 send!(sender, PreferencesMsg::SetPipelineTimeout(Duration::from_secs(button.value() as u64)));
                             }
-                        }
+                        },
+                        add_suffix = &Label {
+                            set_label: "秒",
+                        },
                     },
                 },
                 add = &PreferencesGroup {
@@ -388,6 +394,19 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                         connect_activated(sender) => move |_row| {
                             send!(sender, PreferencesMsg::OpenVideoDirectory);
                         }
+                    },
+                    add = &ActionRow {
+                        set_title: "同步录制时使用单独文件夹",
+                        set_subtitle: "每次进行同步录制时，都在视频保存目录下创建新的文件夹，并在其中保存录制的视频文件",
+                        add_suffix: video_sync_record_use_separate_directory_switch = &Switch {
+                            set_active: track!(model.changed(PreferencesModel::video_sync_record_use_separate_directory()), *model.get_video_sync_record_use_separate_directory()),
+                            set_valign: Align::Center,
+                            connect_state_set(sender) => move |_switch, state| {
+                                send!(sender, PreferencesMsg::SetVideoSyncRecordUseSeparateDirectory(state));
+                                Inhibit(false)
+                            }
+                        },
+                        set_activatable_widget: Some(&video_sync_record_use_separate_directory_switch),
                     },
                     add = &ExpanderRow {
                         set_title: "默认录制时重新编码",
@@ -478,8 +497,8 @@ impl ComponentUpdate<AppModel> for PreferencesModel {
             PreferencesMsg::OpenVideoDirectory => gtk::show_uri(None as Option<&PreferencesWindow>, glib::filename_to_uri(self.get_video_save_path().to_str().unwrap(), None).unwrap().as_str(), gdk::CURRENT_TIME),
             PreferencesMsg::OpenImageDirectory => gtk::show_uri(None as Option<&PreferencesWindow>, glib::filename_to_uri(self.get_image_save_path().to_str().unwrap(), None).unwrap().as_str(), gdk::CURRENT_TIME),
             PreferencesMsg::SetDefaultColorspaceConversion(conversion) => self.set_default_colorspace_conversion(conversion),
-            PreferencesMsg::SetDefaultVideoUrl(url) => self.set_default_video_url(url),
-            PreferencesMsg::SetDefaultSlaveUrl(url) => self.set_default_slave_url(url),
+            PreferencesMsg::SetDefaultVideoUrl(url) => self.default_video_url = url, // 防止输入框的光标移动至最前
+            PreferencesMsg::SetDefaultSlaveUrl(url) => self.default_slave_url = url,
             PreferencesMsg::SetDefaultVideoDecoderCodec(codec) => self.get_mut_default_video_decoder().0 = codec,
             PreferencesMsg::SetDefaultVideoDecoderCodecProvider(provider) => self.get_mut_default_video_decoder().1 = provider,
             PreferencesMsg::SetDefaultReencodeRecordingVideo(reencode) => {
@@ -491,13 +510,14 @@ impl ComponentUpdate<AppModel> for PreferencesModel {
             PreferencesMsg::SetDefaultVideoEncoderCodec(codec) => self.get_mut_default_video_encoder().0 = codec,
             PreferencesMsg::SetDefaultVideoEncoderCodecProvider(provider) => self.get_mut_default_video_encoder().1 = provider,
             PreferencesMsg::SetPipelineTimeout(timeout) => self.set_pipeline_timeout(timeout),
-            PreferencesMsg::SetAppSinkQueueLeakyEnabled(leaky) => self.set_appsink_queue_leaky_enabled(leaky),
+            PreferencesMsg::SetDefaultAppSinkQueueLeakyEnabled(leaky) => self.set_default_appsink_queue_leaky_enabled(leaky),
             PreferencesMsg::SetDefaultUseDecodebin(use_decodebin) => {
                 if use_decodebin {
                     self.set_default_reencode_recording_video(true);
                 }
                 self.set_default_use_decodebin(use_decodebin);
             },
+            PreferencesMsg::SetVideoSyncRecordUseSeparateDirectory(use_separate_directory) => self.set_video_sync_record_use_separate_directory(use_separate_directory),
         }
         send!(parent_sender, AppMsg::PreferencesUpdated(self.clone()));
     }

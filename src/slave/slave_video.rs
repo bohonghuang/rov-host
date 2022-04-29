@@ -89,9 +89,9 @@ impl MicroModel for SlaveVideoModel {
             },
             SlaveVideoMsg::StartRecord(pathbuf) => {
                 if let Some(pipeline) = &self.pipeline {
-                    let preferences = self.preferences.borrow();
-                    let encoder = if *preferences.get_default_reencode_recording_video() { Some(preferences.get_default_video_encoder()) } else { None };
-                    let colorspace_conversion = self.config.lock().unwrap().get_colorspace_conversion().clone();
+                    let config = self.config.lock().unwrap();
+                    let encoder = if *config.get_reencode_recording_video() { Some(config.get_video_encoder()) } else { None };
+                    let colorspace_conversion = config.get_colorspace_conversion().clone();
                     let record_handle = match encoder {
                         Some(encoder) => {
                             let elements = encoder.gst_record_elements(colorspace_conversion, &pathbuf.to_str().unwrap());
@@ -99,7 +99,7 @@ impl MicroModel for SlaveVideoModel {
                             elements_and_pad
                         },
                         None => {
-                            let elements = self.config.lock().unwrap().video_decoder.gst_record_elements(&pathbuf.to_str().unwrap());
+                            let elements = config.video_decoder.gst_record_elements(&pathbuf.to_str().unwrap());
                             let elements_and_pad = elements.and_then(|elements| super::video::connect_elements_to_pipeline(pipeline, "tee_source", &elements).map(|pad| (elements, pad)));
                             elements_and_pad
                         },
@@ -136,15 +136,13 @@ impl MicroModel for SlaveVideoModel {
             SlaveVideoMsg::StartPipeline => {
                 assert!(self.pipeline == None);
                 let config = self.get_config().lock().unwrap();
-                let preferences = self.get_preferences().borrow();
                 let video_url = config.get_video_url();
                 if let Some(video_source) = VideoSource::from_url(video_url) {
                     let video_decoder = config.get_video_decoder().clone();
                     let colorspace_conversion = config.get_colorspace_conversion().clone();
                     let use_decodebin = config.get_use_decodebin().clone();
-                    let appsink_leaky_enabled = preferences.get_appsink_queue_leaky_enabled().clone();
+                    let appsink_leaky_enabled = config.get_appsink_queue_leaky_enabled().clone();
                     
-                    drop(preferences); 
                     drop(config); // 结束 &self 的生命周期
                     
                     match if use_decodebin { super::video::create_decodebin_pipeline(video_source, appsink_leaky_enabled) } else { super::video::create_pipeline(
@@ -212,7 +210,7 @@ impl MicroModel for SlaveVideoModel {
                             if recording {
                                 send!(parent_sender, SlaveMsg::RecordingChanged(false));
                             }
-                            send!(parent_sender, SlaveMsg::ShowToastMessage(String::from("等待管道响应超，已将其强制终止。")));
+                            send!(parent_sender, SlaveMsg::ShowToastMessage(String::from("等待管道响应超时，已将其强制终止。")));
                             pipeline.set_state(gst::State::Null).unwrap();
                         }));
                     } else {

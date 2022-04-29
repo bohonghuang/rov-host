@@ -23,7 +23,7 @@ pub mod input;
 pub mod ui;
 pub mod async_glib;
 
-use std::{cell::RefCell, net::Ipv4Addr, rc::Rc, ops::Deref, str::FromStr};
+use std::{fs, cell::RefCell, net::Ipv4Addr, rc::Rc, ops::Deref, str::FromStr};
 
 use glib::{MainContext, clone, Sender, WeakRef, DateTime, PRIORITY_DEFAULT};
 use gtk::{AboutDialog, Align, Box as GtkBox, Grid, Image, Inhibit, Label, MenuButton, Orientation, Stack, prelude::*, Button, ToggleButton, Separator, License};
@@ -85,7 +85,7 @@ impl ComponentUpdate<AppModel> for AboutModel {
 #[derivative(Default)]
 pub struct AppModel {
     #[derivative(Default(value="Some(false)"))]
-    recording: Option<bool>,
+    sync_recording: Option<bool>,
     fullscreened: bool, 
     #[no_eq]
     #[derivative(Default(value="FactoryVec::new()"))]
@@ -126,19 +126,19 @@ impl Widgets<AppModel, ()> for AppWidgets {
                     set_centering_policy: CenteringPolicy::Strict,
                     pack_start = &Button {
                         set_halign: Align::Center,
-                        set_css_classes?: watch!(model.recording.map(|x| if x { &["destructive-action"] as &[&str] } else { &[] as &[&str] })),
+                        set_css_classes?: watch!(model.sync_recording.map(|x| if x { &["destructive-action"] as &[&str] } else { &[] as &[&str] })),
                         set_child = Some(&GtkBox) {
                             set_spacing: 6,
                             append = &Image {
-                                set_icon_name?: watch!(model.recording.map(|x| Some(if x { "media-playback-stop-symbolic" } else { "media-record-symbolic" })))
+                                set_icon_name?: watch!(model.sync_recording.map(|x| Some(if x { "media-playback-stop-symbolic" } else { "media-record-symbolic" })))
                             },
                             append = &Label {
-                                set_label?: watch!(model.recording.map(|x| if x { "停止" } else { "同步录制" })),
+                                set_label?: watch!(model.sync_recording.map(|x| if x { "停止" } else { "同步录制" })),
                             },
                         },
                         set_visible: track!(model.changed(AppModel::slaves()), model.slaves.len() > 1),
                         connect_clicked[sender = sender.clone(), window = app_window.clone().downgrade()] => move |__button| {
-                            send!(sender, AppMsg::ToggleRecording(window.clone()));
+                            send!(sender, AppMsg::ToggleSyncRecording(window.clone()));
                         }
                     },
                     pack_end = &MenuButton {
@@ -166,15 +166,15 @@ impl Widgets<AppModel, ()> for AppWidgets {
                     pack_end = &Button {
                         set_icon_name: "list-remove-symbolic",
                         set_tooltip_text: Some("移除机位"),
-                        set_sensitive: track!(model.changed(AppModel::recording()) || model.changed(AppModel::slaves()), model.get_slaves().len() > 0 && *model.get_recording() ==  Some(false)),
+                        set_sensitive: track!(model.changed(AppModel::sync_recording()) || model.changed(AppModel::slaves()), model.get_slaves().len() > 0 && *model.get_sync_recording() ==  Some(false)),
                         connect_clicked(sender) => move |_button| {
-                            send!(sender, AppMsg::DestroySlave(std::ptr::null()));
+                            send!(sender, AppMsg::RemoveLastSlave);
                         },
                     },
                     pack_end = &Button {
                         set_icon_name: "list-add-symbolic",
                         set_tooltip_text: Some("新建机位"),
-                        set_sensitive: track!(model.changed(AppModel::recording()), model.recording == Some(false)),
+                        set_sensitive: track!(model.changed(AppModel::sync_recording()), model.sync_recording == Some(false)),
                         connect_clicked[sender = sender.clone(), window = app_window.clone().downgrade()] => move |_button| {
                             send!(sender, AppMsg::NewSlave(window.clone()));
                         },
@@ -253,10 +253,11 @@ impl Widgets<AppModel, ()> for AppWidgets {
 
 pub enum AppMsg {
     NewSlave(WeakRef<ApplicationWindow>),
+    RemoveLastSlave,
     DestroySlave(*const SlaveModel),
     DispatchInputEvent(InputEvent),
     PreferencesUpdated(PreferencesModel),
-    ToggleRecording(WeakRef<ApplicationWindow>),
+    ToggleSyncRecording(WeakRef<ApplicationWindow>),
     SetFullscreened(bool),
     OpenAboutDialog,
     OpenPreferencesWindow,
@@ -318,7 +319,7 @@ impl AppUpdate for AppModel {
                     Continue(true)
                 }));
                 self.get_mut_slaves().push(component);
-                self.set_recording(Some(false));
+                self.set_sync_recording(Some(false));
             },
             AppMsg::PreferencesUpdated(preferences) => {
                 *self.get_mut_preferences().borrow_mut() = preferences;
@@ -333,17 +334,25 @@ impl AppUpdate for AppModel {
                     }
                 }
             },
-            AppMsg::ToggleRecording(window) => match *self.get_recording() {
+            AppMsg::ToggleSyncRecording(window) => match *self.get_sync_recording() {
                 Some(recording) => {
                     if !recording {
                         if self.slaves.iter().all(|x| *x.model().unwrap().get_polling() == Some(true) && *x.model().unwrap().get_recording() == Some(false)) {
+                            let timestamp = DateTime::now_local().unwrap().format_iso8601().unwrap().replace(":", "-");
                             for (index, component) in self.slaves.iter().enumerate() {
                                 let model = component.model().unwrap();
-                                let mut pathbuf = self.preferences.borrow().get_video_save_path().clone();
-                                pathbuf.push(format!("{}_{}.mkv", DateTime::now_local().unwrap().format_iso8601().unwrap().replace(":", "-"), index + 1));
+                                let preferences = self.preferences.borrow();
+                                let mut pathbuf = preferences.get_video_save_path().clone();
+                                if *preferences.get_video_sync_record_use_separate_directory() {
+                                    pathbuf.push(&timestamp);
+                                    fs::create_dir_all(&pathbuf).unwrap();
+                                    pathbuf.push(format!("{}.mkv", index + 1));
+                                } else {
+                                    pathbuf.push(format!("{}_{}.mkv", &timestamp, index + 1));
+                                }
                                 model.get_video().send(SlaveVideoMsg::StartRecord(pathbuf)).unwrap();
                             }
-                            self.set_recording(Some(true));
+                            self.set_sync_recording(Some(true));
                         } else {
                             error_message("错误", "无法进行同步录制，请确保所有机位均已启动拉流并未处于录制状态。", window.upgrade().as_ref()).present();
                         }
@@ -352,7 +361,7 @@ impl AppUpdate for AppModel {
                             let model = component.model().unwrap();
                             model.get_video().send(SlaveVideoMsg::StopRecord(None)).unwrap();
                         }
-                        self.set_recording(Some(false));
+                        self.set_sync_recording(Some(false));
                     }
                 },
                 None => (),
@@ -375,6 +384,11 @@ impl AppUpdate for AppModel {
                 }
             },
             AppMsg::SetFullscreened(fullscreened) => self.set_fullscreened(fullscreened),
+            AppMsg::RemoveLastSlave => {
+                if let Some(slave) = self.get_slaves().iter().last() {
+                    send!(slave.sender(), SlaveMsg::DestroySlave);
+                }
+            },
         }
         true
     }

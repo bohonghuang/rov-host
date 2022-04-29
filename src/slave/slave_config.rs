@@ -29,7 +29,7 @@ use derivative::*;
 use url::Url;
 
 use crate::{preferences::PreferencesModel, slave::video::{VideoDecoder, ColorspaceConversion, VideoCodecProvider, VideoCodec}};
-use super::{SlaveMsg, video::VideoAlgorithm};
+use super::{SlaveMsg, video::{VideoAlgorithm, VideoEncoder}};
 
 #[tracker::track(pub)]
 #[derive(Debug, Derivative, PartialEq, Clone)]
@@ -54,6 +54,10 @@ pub struct SlaveConfigModel {
     pub swap_xy: bool,
     #[derivative(Default(value="PreferencesModel::default().default_use_decodebin"))]
     pub use_decodebin: bool,
+    pub video_encoder: VideoEncoder,
+    pub reencode_recording_video: bool,
+    #[derivative(Default(value="PreferencesModel::default().default_appsink_queue_leaky_enabled"))]
+    pub appsink_queue_leaky_enabled: bool,
 }
 
 impl SlaveConfigModel {
@@ -72,6 +76,9 @@ impl SlaveConfigModel {
             video_decoder: preferences.get_default_video_decoder().clone(),
             keep_video_display_ratio: preferences.get_default_keep_video_display_ratio().clone(),
             use_decodebin: preferences.get_default_use_decodebin().clone(),
+            video_encoder: preferences.get_default_video_encoder().clone(),
+            reencode_recording_video: preferences.get_default_reencode_recording_video().clone(),
+            appsink_queue_leaky_enabled: preferences.get_default_appsink_queue_leaky_enabled().clone(),
             ..Default::default()
         }
     }
@@ -100,7 +107,21 @@ impl MicroModel for SlaveConfigModel {
             SlaveConfigMsg::SetVideoDecoderCodec(codec) => self.get_mut_video_decoder().0 = codec,
             SlaveConfigMsg::SetVideoDecoderCodecProvider(provider) => self.get_mut_video_decoder().1 = provider,
             SlaveConfigMsg::SetSwapXY(swap) => self.set_swap_xy(swap),
-            SlaveConfigMsg::SetUsePlaybin(use_decodebin) => self.set_use_decodebin(use_decodebin),
+            SlaveConfigMsg::SetUsePlaybin(use_decodebin) => {
+                if use_decodebin {
+                    self.set_reencode_recording_video(true);
+                }
+                self.set_use_decodebin(use_decodebin);
+            },
+            SlaveConfigMsg::SetVideoEncoderCodec(codec) => self.get_mut_video_encoder().0 = codec,
+            SlaveConfigMsg::SetVideoEncoderCodecProvider(provider) => self.get_mut_video_encoder().1 = provider,
+            SlaveConfigMsg::SetReencodeRecordingVideo(reencode) => {
+                if !reencode {
+                    self.set_use_decodebin(false);
+                }
+                self.set_reencode_recording_video(reencode)
+            },
+            SlaveConfigMsg::SetAppSinkQueueLeakyEnabled(leaky) => self.set_appsink_queue_leaky_enabled(leaky),
         }
         send!(parent_sender, SlaveMsg::ConfigUpdated);
     }
@@ -125,6 +146,10 @@ pub enum SlaveConfigMsg {
     SetVideoDecoderCodecProvider(VideoCodecProvider),
     SetSwapXY(bool),
     SetUsePlaybin(bool),
+    SetVideoEncoderCodec(VideoCodec),
+    SetVideoEncoderCodecProvider(VideoCodecProvider),
+    SetReencodeRecordingVideo(bool),
+    SetAppSinkQueueLeakyEnabled(bool),
 }
 
 #[micro_widget(pub)]
@@ -238,6 +263,19 @@ impl MicroWidgets<SlaveConfigModel> for SlaveConfigWidgets {
                                     }
                                 },
                             },
+                            add = &ActionRow {
+                                set_title: "启用画面自动跳帧",
+                                set_subtitle: "当机位画面与视频流延迟过大时，自动跳帧以避免延迟提升",
+                                add_suffix: appsink_queue_leaky_enabled_switch = &Switch {
+                                    set_active: track!(model.changed(SlaveConfigModel::appsink_queue_leaky_enabled()), *model.get_appsink_queue_leaky_enabled()),
+                                    set_valign: Align::Center,
+                                    connect_state_set(sender) => move |_switch, state| {
+                                        send!(sender, SlaveConfigMsg::SetAppSinkQueueLeakyEnabled(state));
+                                        Inhibit(false)
+                                    }
+                                },
+                                set_activatable_widget: Some(&appsink_queue_leaky_enabled_switch),
+                            },
                             add = &ExpanderRow {
                                 set_title: "手动配置管道",
                                 set_show_enable_switch: true,
@@ -292,6 +330,45 @@ impl MicroWidgets<SlaveConfigModel> for SlaveConfigWidgets {
                                     },
                                 },
                             },
+                            add = &ExpanderRow {
+                                set_title: "录制时重新编码",
+                                set_show_enable_switch: true,
+                                set_expanded: *model.get_reencode_recording_video(),
+                                set_enable_expansion: track!(model.changed(SlaveConfigModel::reencode_recording_video()), *model.get_reencode_recording_video()),
+                                connect_enable_expansion_notify(sender) => move |expander| {
+                                    send!(sender, SlaveConfigMsg::SetReencodeRecordingVideo(expander.enables_expansion()));
+                                },
+                                add_row = &ComboRow {
+                                    set_title: "编码器",
+                                    set_subtitle: "视频录制时使用的编码器",
+                                    set_model: Some(&{
+                                        let model = StringList::new(&[]);
+                                        for value in VideoCodec::iter() {
+                                            model.append(&value.to_string());
+                                        }
+                                        model
+                                    }),
+                                    set_selected: track!(model.changed(SlaveConfigModel::video_encoder()), VideoCodec::iter().position(|x| x == model.video_encoder.0).unwrap() as u32),
+                                    connect_selected_notify(sender) => move |row| {
+                                        send!(sender, SlaveConfigMsg::SetVideoEncoderCodec(VideoCodec::iter().nth(row.selected() as usize).unwrap()))
+                                    }
+                                },
+                                add_row = &ComboRow {
+                                    set_title: "编码器接口",
+                                    set_subtitle: "视频录制时调用的编码器接口",
+                                    set_model: Some(&{
+                                        let model = StringList::new(&[]);
+                                        for value in VideoCodecProvider::iter() {
+                                            model.append(&value.to_string());
+                                        }
+                                        model
+                                    }),
+                                    set_selected: track!(model.changed(SlaveConfigModel::video_encoder()), VideoCodecProvider::iter().position(|x| x == model.video_encoder.1).unwrap() as u32),
+                                    connect_selected_notify(sender) => move |row| {
+                                        send!(sender, SlaveConfigMsg::SetVideoEncoderCodecProvider(VideoCodecProvider::iter().nth(row.selected() as usize).unwrap()))
+                                    }
+                                },
+                            },
                         },
                     },
                 },
@@ -299,3 +376,15 @@ impl MicroWidgets<SlaveConfigModel> for SlaveConfigWidgets {
         }
     }
 }
+// Local Variables:
+// eval: (local-set-key
+//        (kbd "C-S-y")
+//        (defun rov-host-yank-preferences-to-slave-config ()
+//          (interactive)
+//          (yank)
+//          (let ((beg (mark-marker))
+//                (end (point-marker)))
+//            (replace-regexp-in-region "Default" "" beg end)
+//            (replace-regexp-in-region "default_" "" beg end)
+//            (replace-regexp-in-region "Preferences" "SlaveConfig" beg end))))
+// End:
