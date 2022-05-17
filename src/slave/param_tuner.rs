@@ -30,6 +30,7 @@ use derivative::*;
 
 use crate::ui::graph_view::{GraphView, Point as GraphPoint};
 use crate::slave::SlaveTcpMsg;
+use crate::function::*;
 
 use super::SlaveMsg;
 
@@ -42,7 +43,7 @@ pub enum SlaveParameterTunerMsg {
     SetP(usize, f64),
     SetI(usize, f64),
     SetD(usize, f64),
-    SetPwmFreqCalibration(f64),
+    SetPropellerPwmFreqCalibration(f64),
     ResetParameters,
     ApplyParameters,
     StartDebug(TcpStream),
@@ -165,10 +166,7 @@ impl ControlLoopModel {
     }
     
     fn vec_to_map(v: Vec<&ControlLoopModel>) -> HashMap<String, ControlLoop> {
-        v.iter().map(|model| {
-            let ControlLoopModel { key, p, i, d, .. } = Deref::deref(model).clone();
-            (key, ControlLoop { p, i, d })
-        }).collect()
+        v.iter().map(Deref::deref).map(Self::to_control_loop).collect()
     }
 
     fn key_to_string<'a, 'b : 'a>(key: &'b str) -> &'a str {
@@ -178,6 +176,11 @@ impl ControlLoopModel {
             key => key,
         }
     }
+
+    fn to_control_loop(&self) -> (String, ControlLoop) {
+        let Self { key, p, i, d, .. } = self.clone();
+        (key, ControlLoop { p, i, d })
+    }
 }
 
 #[tracker::track(pub)]
@@ -185,7 +188,7 @@ impl ControlLoopModel {
 #[derivative(Default)]
 pub struct SlaveParameterTunerModel {
     #[derivative(Default(value="0.0"))]
-    pwm_frequency_calibration: f64,
+    propeller_pwm_frequency_calibration: f64,
     #[no_eq]
     #[derivative(Default(value="FactoryVec::new()"))]
     propellers: FactoryVec<PropellerModel>,
@@ -443,11 +446,11 @@ impl MicroWidgets<SlaveParameterTunerModel> for SlaveParameterTunerWidgets {
                             add = &ActionRow {
                                 set_title: "频率校准",
                                 add_suffix = &SpinButton::with_range(-0.1, 0.1, 0.0001) {
-                                    set_value: track!(model.changed(SlaveParameterTunerModel::pwm_frequency_calibration()), *model.get_pwm_frequency_calibration() as f64),
+                                    set_value: track!(model.changed(SlaveParameterTunerModel::propeller_pwm_frequency_calibration()), *model.get_propeller_pwm_frequency_calibration() as f64),
                                     set_digits: 4,
                                     set_valign: Align::Center,
                                     connect_value_changed(sender) => move |button| {
-                                        send!(sender, SlaveParameterTunerMsg::SetPwmFreqCalibration(button.value()));
+                                        send!(sender, SlaveParameterTunerMsg::SetPropellerPwmFreqCalibration(button.value()));
                                     }
                                 },
                             },
@@ -455,9 +458,9 @@ impl MicroWidgets<SlaveParameterTunerModel> for SlaveParameterTunerWidgets {
                                 set_child = Some(&Scale::with_range(Orientation::Horizontal, -0.1, 0.1, 0.0001)) {
                                     set_width_request: CARD_MIN_WIDTH,
                                     set_round_digits: 4,
-                                    set_value: track!(model.changed(SlaveParameterTunerModel::pwm_frequency_calibration()), *model.get_pwm_frequency_calibration() as f64),
+                                    set_value: track!(model.changed(SlaveParameterTunerModel::propeller_pwm_frequency_calibration()), *model.get_propeller_pwm_frequency_calibration() as f64),
                                     connect_value_changed(sender) => move |scale| {
-                                        send!(sender, SlaveParameterTunerMsg::SetPwmFreqCalibration(scale.value()));
+                                        send!(sender, SlaveParameterTunerMsg::SetPropellerPwmFreqCalibration(scale.value()));
                                     }
                                 }
                             },
@@ -482,7 +485,7 @@ impl MicroWidgets<SlaveParameterTunerModel> for SlaveParameterTunerWidgets {
                 set_vexpand: true,
                 set_can_focus: false,
                 add: group_pid = &PreferencesGroup {
-                    set_title: "PID参数",
+                    set_title: "PID 参数",
                     add = &FlowBox {
                         set_activate_on_single_click: false,
                         set_valign: Align::Start,
@@ -493,53 +496,6 @@ impl MicroWidgets<SlaveParameterTunerModel> for SlaveParameterTunerWidgets {
                 },
             },
             set_title: {
-                {           // Relm4存在Bug，以下代码应防止在 `post_view` 函数里
-                    let groups = [&group_propeller, &group_pid];
-                    let clamps = groups.iter().map(|x| x.parent().and_then(|x| x.parent()).and_then(|x| x.dynamic_cast::<Clamp>().ok())).filter_map(|x| x);
-                    for clamp in clamps {
-                        clamp.set_maximum_size(10000);
-                    }
-                    let overlay: ToastOverlay = window.content().unwrap().dynamic_cast().unwrap();
-                    let leaflet: Leaflet = overlay.child().unwrap().dynamic_cast().unwrap();
-                    let root_box: GtkBox = leaflet.observe_children().into_iter().find_map(|x| x.dynamic_cast().ok()).unwrap();
-                    let header_bar: HeaderBar = root_box.first_child().unwrap().dynamic_cast().unwrap();
-                    relm4_macros::view! {
-                        HeaderBar::from(header_bar) {
-                            pack_start = &Button {
-                                set_css_classes: &["suggested-action"],
-                                set_halign: Align::Center,
-                                set_child = Some(&GtkBox) {
-                                    set_spacing: 6,
-                                    append = &Image {
-                                        set_icon_name: Some("document-save-symbolic"),
-                                    },
-                                    append = &Label {
-                                        set_label: "保存",
-                                    },
-                                },
-                                connect_clicked(sender) => move |_button| {
-                                    send!(sender, SlaveParameterTunerMsg::ApplyParameters);
-                                },
-                            },
-                            pack_end = &Button {
-                                set_css_classes: &["destructive-action"],
-                                set_halign: Align::Center,
-                                set_child = Some(&GtkBox) {
-                                    set_spacing: 6,
-                                    append = &Image {
-                                        set_icon_name: Some("view-refresh-symbolic"),
-                                    },
-                                    append = &Label {
-                                        set_label: "读取",
-                                    },
-                                },
-                                connect_clicked(sender) => move |_button| {
-                                    send!(sender, SlaveParameterTunerMsg::ResetParameters);
-                                },
-                            },
-                        }
-                    }
-                }
                 Some("参数调校")
             },
             set_destroy: track!(model.changed(SlaveParameterTunerModel::stopped()), *model.get_stopped()),
@@ -547,6 +503,53 @@ impl MicroWidgets<SlaveParameterTunerModel> for SlaveParameterTunerWidgets {
                 send!(sender, SlaveParameterTunerMsg::StopDebug);
                 Inhibit(false)
             },
+        }
+    }
+    fn post_init() {
+        let groups = [&group_propeller, &group_pid];
+        let clamps = groups.iter().map(|x| x.parent().and_then(|x| x.parent()).and_then(|x| x.dynamic_cast::<Clamp>().ok())).filter_map(|x| x);
+        for clamp in clamps {
+            clamp.set_maximum_size(10000);
+        }
+        let overlay: ToastOverlay = window.content().unwrap().dynamic_cast().unwrap();
+        let leaflet: Leaflet = overlay.child().unwrap().dynamic_cast().unwrap();
+        let root_box: GtkBox = leaflet.observe_children().into_iter().find_map(|x| x.dynamic_cast().ok()).unwrap();
+        let header_bar: HeaderBar = root_box.first_child().unwrap().dynamic_cast().unwrap();
+        relm4_macros::view! {
+            HeaderBar::from(header_bar) {
+                pack_start = &Button {
+                    set_css_classes: &["suggested-action"],
+                    set_halign: Align::Center,
+                    set_child = Some(&GtkBox) {
+                        set_spacing: 6,
+                        append = &Image {
+                            set_icon_name: Some("document-save-symbolic"),
+                        },
+                        append = &Label {
+                            set_label: "保存",
+                        },
+                    },
+                    connect_clicked(sender) => move |_button| {
+                        send!(sender, SlaveParameterTunerMsg::ApplyParameters);
+                    },
+                },
+                pack_end = &Button {
+                    set_css_classes: &["destructive-action"],
+                    set_halign: Align::Center,
+                    set_child = Some(&GtkBox) {
+                        set_spacing: 6,
+                        append = &Image {
+                            set_icon_name: Some("view-refresh-symbolic"),
+                        },
+                        append = &Label {
+                            set_label: "读取",
+                        },
+                    },
+                    connect_clicked(sender) => move |_button| {
+                        send!(sender, SlaveParameterTunerMsg::ResetParameters);
+                    },
+                },
+            }
         }
     }
 }
@@ -573,6 +576,11 @@ struct SlaveParameterTunerSetPropellerPacket {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct SlaveParameterTunerSetControlLoopPacket {
+    set_control_loop_parameters: HashMap<String, ControlLoop>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct SlaveParameterTunerSetDebugModeEnabledPacket {
     set_debug_mode_enabled: bool,
 }
@@ -580,7 +588,7 @@ struct SlaveParameterTunerSetDebugModeEnabledPacket {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SlaveParameterTunerPacket {
-    set_pwm_freq_calibration: f64,
+    set_propeller_pwm_freq_calibration: f64,
     set_propeller_parameters: HashMap<String, Propeller>,
     set_control_loop_parameters: HashMap<String, ControlLoop>,
 }
@@ -607,6 +615,8 @@ enum SlaveParameterTunerTcpMsg {
     SetDebugModeEnabled(bool),
     PreviewPropeller(String, i8),
     PreviewPropellers(HashMap<String, i8>),
+    PreviewControlLoop(String, ControlLoop),
+    PreviewControlLoops(HashMap<String, ControlLoop>),
     ConnectionLost(IOError),
     Terminate,
 }
@@ -619,8 +629,9 @@ async fn parameter_tuner_handler(mut tcp_stream: TcpStream,
         SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis()
     }
     const PREVIEW_TIME_MILLIS: u128 = 1000;
-    let last_preview_timestamp = async_std::sync::Arc::new(async_std::sync::Mutex::new(None as Option<u128>));
+    let last_propeller_preview_timestamp = async_std::sync::Arc::new(async_std::sync::Mutex::new(None as Option<u128>));
     let preview_propellers_value = async_std::sync::Arc::new(async_std::sync::Mutex::new(HashMap::<String, i8>::new()));
+    let preview_control_loops = async_std::sync::Arc::new(async_std::sync::Mutex::new(HashMap::<String, ControlLoop>::new()));
     let receive_task = task::spawn(clone!(@strong tcp_stream, @strong model_sender, @strong tcp_sender => async move {
         let mut tcp_stream = tcp_stream.clone();
         let mut buf = [0u8; 1024];
@@ -654,11 +665,17 @@ async fn parameter_tuner_handler(mut tcp_stream: TcpStream,
         }
     }));
 
-    let propeller_preview_task = task::spawn(clone!(@strong tcp_sender, @strong last_preview_timestamp, @strong preview_propellers_value => async move {
+    let parameter_preview_task = task::spawn(clone!(@strong tcp_sender, @strong preview_propellers_value, @strong preview_control_loops => async move {
         loop {
             if !preview_propellers_value.lock().await.is_empty() {
                 let propeller_values = std::mem::replace(&mut *preview_propellers_value.lock().await, HashMap::new());
                 if tcp_sender.send(SlaveParameterTunerTcpMsg::PreviewPropellers(propeller_values)).await.is_err() {
+                    break;
+                }
+            }
+            if !preview_control_loops.lock().await.is_empty() {
+                let control_loops = std::mem::replace(&mut *preview_control_loops.lock().await, HashMap::new());
+                if tcp_sender.send(SlaveParameterTunerTcpMsg::PreviewControlLoops(control_loops)).await.is_err() {
                     break;
                 }
             }
@@ -667,9 +684,9 @@ async fn parameter_tuner_handler(mut tcp_stream: TcpStream,
         }
     }));
     
-    let stop_propeller_preview_task = task::spawn(clone!(@strong tcp_sender, @strong last_preview_timestamp => async move {
+    let stop_propeller_preview_task = task::spawn(clone!(@strong tcp_sender, @strong last_propeller_preview_timestamp => async move {
         loop {
-            let mut last_millis = last_preview_timestamp.lock().await;
+            let mut last_millis = last_propeller_preview_timestamp.lock().await;
             if let Some(millis) = *last_millis {
                 if current_millis() - millis >= PREVIEW_TIME_MILLIS {
                     if tcp_sender.send(SlaveParameterTunerTcpMsg::PreviewPropellers(DEFAULT_PROPELLERS.iter().map(|x| (x.to_string(), 0i8)).collect())).await.is_err() {
@@ -700,13 +717,9 @@ async fn parameter_tuner_handler(mut tcp_stream: TcpStream,
                         tcp_stream.write_all(json_string.as_bytes()).await?;
                         tcp_stream.flush().await?;
                     },
-                    SlaveParameterTunerTcpMsg::PreviewPropeller(name, value) => {
-                        preview_propellers_value.lock().await.insert(name, value);
-                        *last_preview_timestamp.lock().await = Some(current_millis());
-                    },
                     SlaveParameterTunerTcpMsg::Terminate => {
                         receive_task.cancel().await;
-                        propeller_preview_task.cancel().await;
+                        parameter_preview_task.cancel().await;
                         stop_propeller_preview_task.cancel().await;
                         break;
                     },
@@ -716,6 +729,17 @@ async fn parameter_tuner_handler(mut tcp_stream: TcpStream,
                         tcp_receiver.close();
                         return Err(err);
                     },
+                    SlaveParameterTunerTcpMsg::SetDebugModeEnabled(enabled) => {
+                        let json_string = serde_json::to_string(&SlaveParameterTunerSetDebugModeEnabledPacket {
+                            set_debug_mode_enabled: enabled,
+                        }).unwrap();
+                        tcp_stream.write_all(json_string.as_bytes()).await?;
+                        tcp_stream.flush().await?;
+                    },
+                    SlaveParameterTunerTcpMsg::PreviewPropeller(name, value) => {
+                        preview_propellers_value.lock().await.insert(name, value);
+                        *last_propeller_preview_timestamp.lock().await = Some(current_millis());
+                    },
                     SlaveParameterTunerTcpMsg::PreviewPropellers(propeller_values) => {
                         let json_string = serde_json::to_string(&SlaveParameterTunerSetPropellerPacket {
                             set_propeller_values: propeller_values,
@@ -723,12 +747,15 @@ async fn parameter_tuner_handler(mut tcp_stream: TcpStream,
                         tcp_stream.write_all(json_string.as_bytes()).await?;
                         tcp_stream.flush().await?;
                     },
-                    SlaveParameterTunerTcpMsg::SetDebugModeEnabled(enabled) => {
-                        let json_string = serde_json::to_string(&SlaveParameterTunerSetDebugModeEnabledPacket {
-                            set_debug_mode_enabled: enabled,
+                    SlaveParameterTunerTcpMsg::PreviewControlLoops(control_loops) => {
+                        let json_string = serde_json::to_string(&SlaveParameterTunerSetControlLoopPacket {
+                            set_control_loop_parameters: control_loops,
                         }).unwrap();
                         tcp_stream.write_all(json_string.as_bytes()).await?;
                         tcp_stream.flush().await?;
+                    },
+                    SlaveParameterTunerTcpMsg::PreviewControlLoop(name, value) => {
+                        preview_control_loops.lock().await.insert(name, value);
                     },
                 }
             },
@@ -746,43 +773,44 @@ impl MicroModel for SlaveParameterTunerModel {
     
     fn update(&mut self, msg: SlaveParameterTunerMsg, parent_sender: &Sender<SlaveMsg>, sender: Sender<SlaveParameterTunerMsg>) {
         self.reset();
+        
         match msg {
             SlaveParameterTunerMsg::SetPropellerLowerDeadzone(index, value) => {
-                if let Some(deadzone) = self.propellers.get_mut(index) {
-                    deadzone.reset();
-                    deadzone.set_lower(value);
-                    deadzone.set_upper(max(*deadzone.get_upper(), value));
-                }
-                if let Some(msg_sender) = self.get_tcp_msg_sender() {
-                    msg_sender.try_send(SlaveParameterTunerTcpMsg::PreviewPropeller(self.propellers.get(index).unwrap().get_key().clone(), value)).unwrap_or(());
+                if let Some(propeller) = self.propellers.get_mut(index) {
+                    propeller.reset();
+                    propeller.set_lower(value);
+                    propeller.set_upper(max(*propeller.get_upper(), value));
+                }               // 不使用 unsafe 似乎无法在结束可变借用生命周期的同时将其转换为不可变借用？
+                if let (Some(propeller), Some(msg_sender)) = (self.propellers.get(index), self.get_tcp_msg_sender()) {
+                    msg_sender.try_send(SlaveParameterTunerTcpMsg::PreviewPropeller(propeller.get_key().clone(), value)).unwrap_or(());
                 }
             },
             SlaveParameterTunerMsg::SetPropellerUpperDeadzone(index, value) => {
-                if let Some(deadzone) = self.propellers.get_mut(index) {
-                    deadzone.reset();
-                    deadzone.set_upper(value);
-                    deadzone.set_lower(min(*deadzone.get_lower(), value));
+                if let Some(propeller) = self.propellers.get_mut(index) {
+                    propeller.reset();
+                    propeller.set_upper(value);
+                    propeller.set_lower(min(*propeller.get_lower(), value));
                 }
-                if let Some(msg_sender) = self.get_tcp_msg_sender() {
-                    msg_sender.try_send(SlaveParameterTunerTcpMsg::PreviewPropeller(self.propellers.get(index).unwrap().get_key().clone(), value)).unwrap_or(());
+                if let (Some(propeller), Some(msg_sender)) = (self.propellers.get(index), self.get_tcp_msg_sender()) {
+                    msg_sender.try_send(SlaveParameterTunerTcpMsg::PreviewPropeller(propeller.get_key().clone(), value)).unwrap_or(());
                 }
             },
             SlaveParameterTunerMsg::SetPropellerPower(index, value) => {
-                if let Some(deadzone) = self.propellers.get_mut(index) {
-                    deadzone.reset();
-                    deadzone.set_actual_power(value);
+                if let Some(propeller) = self.propellers.get_mut(index) {
+                    propeller.reset();
+                    propeller.set_actual_power(value);
                 }
             },
             SlaveParameterTunerMsg::SetPropellerReversed(index, reversed) => {
-                if let Some(deadzone) = self.propellers.get_mut(index) {
-                    deadzone.reset();
-                    deadzone.set_reversed(reversed);
+                if let Some(propeller) = self.propellers.get_mut(index) {
+                    propeller.reset();
+                    propeller.set_reversed(reversed);
                 }
             },
             SlaveParameterTunerMsg::SetPropellerEnabled(index, enabled) => {
-                if let Some(deadzone) = self.propellers.get_mut(index) {
-                    deadzone.reset();
-                    deadzone.set_enabled(enabled);
+                if let Some(propeller) = self.propellers.get_mut(index) {
+                    propeller.reset();
+                    propeller.set_enabled(enabled);
                 }
             },
             SlaveParameterTunerMsg::SetP(index, value) => {
@@ -790,11 +818,17 @@ impl MicroModel for SlaveParameterTunerModel {
                     pids.reset();
                     pids.set_p(value);
                 }
+                if let (Some(pids), Some(msg_sender)) = (self.control_loops.get(index), self.get_tcp_msg_sender()) {
+                    msg_sender.try_send(SlaveParameterTunerTcpMsg::PreviewControlLoop.apply(pids.to_control_loop())).unwrap_or(());
+                }
             },
             SlaveParameterTunerMsg::SetI(index, value) => {
                 if let Some(pids) = self.control_loops.get_mut(index) {
                     pids.reset();
                     pids.set_i(value);
+                }
+                if let (Some(pids), Some(msg_sender)) = (self.control_loops.get(index), self.get_tcp_msg_sender()) {
+                    msg_sender.try_send(SlaveParameterTunerTcpMsg::PreviewControlLoop.apply(pids.to_control_loop())).unwrap_or(());
                 }
             },
             SlaveParameterTunerMsg::SetD(index, value) => {
@@ -802,24 +836,24 @@ impl MicroModel for SlaveParameterTunerModel {
                     pids.reset();
                     pids.set_d(value);
                 }
+                if let (Some(pids), Some(msg_sender)) = (self.control_loops.get(index), self.get_tcp_msg_sender()) {
+                    msg_sender.try_send(SlaveParameterTunerTcpMsg::PreviewControlLoop.apply(pids.to_control_loop())).unwrap_or(());
+                }
             },
             SlaveParameterTunerMsg::ResetParameters => {
                 if let Some(msg_sender) = self.get_tcp_msg_sender() {
                     msg_sender.try_send(SlaveParameterTunerTcpMsg::RequestParameters).unwrap_or(());
                 }
-                // send!(sender, SlaveParameterTunerMsg::ParametersReceived(SlaveParameterTunerPacket { propellers: [("center_right".to_string(), Propeller { lower: 50, upper: 60, power: 0.5, enabled: false })].into_iter().collect(), control_loops: HashMap::new() })); // Debug
             },
             SlaveParameterTunerMsg::ApplyParameters => {
                 if let Some(msg_sender) = self.get_tcp_msg_sender() {
                     msg_sender.try_send(SlaveParameterTunerTcpMsg::UploadParameters(SlaveParameterTunerPacket {
-                        set_pwm_freq_calibration: self.pwm_frequency_calibration,
+                        set_propeller_pwm_freq_calibration: self.propeller_pwm_frequency_calibration,
                         set_propeller_parameters: PropellerModel::vec_to_map(self.propellers.iter().collect()),
                         set_control_loop_parameters: ControlLoopModel::vec_to_map(self.control_loops.iter().collect()),
                     })).unwrap_or(());
                     
                 }
-                // use rand::Rng;
-                // send!(sender, SlaveParameterTunerMsg::FeedbacksReceived(SlaveParameterTunerFeedbackPacket { feedbacks: SlaveParameterTunerFeedbackValuePacket { control_loops: [("depth_lock".to_string(), rand::thread_rng().gen_range(-100..=100) as f32 / 100.0)].into_iter().collect() } })); // Debug
             },
             SlaveParameterTunerMsg::StartDebug(tcp_stream) => {
                 let (tcp_sender, tcp_receiver) = async_std::channel::bounded::<SlaveParameterTunerTcpMsg>(128);
@@ -851,8 +885,8 @@ impl MicroModel for SlaveParameterTunerModel {
                     }
                 }
             },
-            SlaveParameterTunerMsg::ParametersReceived(SlaveParameterTunerPacket { set_pwm_freq_calibration: pwm_freq_calibration, set_propeller_parameters: propellers, set_control_loop_parameters: control_loops }) => {
-                self.set_pwm_frequency_calibration(pwm_freq_calibration);
+            SlaveParameterTunerMsg::ParametersReceived(SlaveParameterTunerPacket { set_propeller_pwm_freq_calibration: pwm_freq_calibration, set_propeller_parameters: propellers, set_control_loop_parameters: control_loops }) => {
+                self.set_propeller_pwm_frequency_calibration(pwm_freq_calibration);
                 for index in 0..self.propellers.len() {
                     let propeller_model = self.propellers.get_mut(index).unwrap();
                     if let Some(propeller) = propellers.get(propeller_model.get_key()) {
@@ -871,8 +905,8 @@ impl MicroModel for SlaveParameterTunerModel {
                     }
                 }
             },
-            SlaveParameterTunerMsg::SetPwmFreqCalibration(cal) => {
-              self.set_pwm_frequency_calibration(cal);
+            SlaveParameterTunerMsg::SetPropellerPwmFreqCalibration(cal) => {
+              self.set_propeller_pwm_frequency_calibration(cal);
             },
         }
     }

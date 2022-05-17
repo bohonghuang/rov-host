@@ -22,6 +22,7 @@ pub mod prelude;
 pub mod input;
 pub mod ui;
 pub mod async_glib;
+pub mod function;
 
 use std::{fs, cell::RefCell, net::Ipv4Addr, rc::Rc, ops::Deref, str::FromStr};
 

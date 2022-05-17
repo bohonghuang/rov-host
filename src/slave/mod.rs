@@ -67,6 +67,7 @@ pub struct SlaveModel {
     #[no_eq]
     #[derivative(Default(value="MainContext::channel(PRIORITY_DEFAULT).0"))]
     pub input_event_sender: Sender<InputSourceEvent>,
+    #[derivative(Default(value="true"))]
     pub slave_info_displayed: bool,
     #[no_eq]
     pub status: Arc<Mutex<HashMap<SlaveStatusClass, i16>>>,
@@ -119,7 +120,7 @@ impl FactoryPrototype for SlaveInfoModel {
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
 pub enum SlaveStatusClass {
-    MotionX, MotionY, MotionZ, MotionRotate,
+    MotionX, MotionY, MotionZ, MotionRotate, RoboticArmOpen, RoboticArmClose,
     DepthLocked, DirectionLocked,
 }
 
@@ -128,6 +129,7 @@ impl SlaveStatusClass {
         match (*OS).os_type() {
             OSType::Windows => {
                 match button {
+                    5 => Some(SlaveStatusClass::RoboticArmOpen),
                     8 => Some(SlaveStatusClass::DepthLocked),
                     9 => Some(SlaveStatusClass::DirectionLocked),
                     _ => None,
@@ -137,6 +139,7 @@ impl SlaveStatusClass {
                 match button {
                     7 => Some(SlaveStatusClass::DepthLocked),
                     8 => Some(SlaveStatusClass::DirectionLocked),
+                    10 => Some(SlaveStatusClass::RoboticArmOpen),
                     _ => None,
                 }
             }
@@ -151,6 +154,7 @@ impl SlaveStatusClass {
                     1 => Some(SlaveStatusClass::MotionY),
                     2 => Some(SlaveStatusClass::MotionRotate),
                     3 => Some(SlaveStatusClass::MotionZ),
+                    5 => Some(SlaveStatusClass::RoboticArmClose),
                     _ => None
                 }
             }
@@ -407,48 +411,66 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                                                     set_row_spacing: 2,
                                                     set_column_spacing: 2,
                                                     attach(0, 0, 1, 1) = &ToggleButton {
+                                                        set_icon_name: "go-last-symbolic",
+                                                        set_can_focus: false,
+                                                        set_can_target: false,
+                                                        set_active: track!(model.changed(SlaveModel::status()), model.get_target_status(&SlaveStatusClass::RoboticArmClose) > 0),
+                                                    },
+                                                    attach(1, 0, 1, 1) = &ToggleButton {
+                                                        set_icon_name: "object-flip-horizontal-symbolic",
+                                                        set_can_focus: false,
+                                                        set_can_target: false,
+                                                        set_active: track!(model.changed(SlaveModel::status()), model.get_target_status(&SlaveStatusClass::RoboticArmOpen) > 0),
+                                                    },
+                                                    attach(2, 0, 1, 1) = &ToggleButton {
+                                                        set_icon_name: "go-first-symbolic",
+                                                        set_can_focus: false,
+                                                        set_can_target: false,
+                                                        set_active: track!(model.changed(SlaveModel::status()), model.get_target_status(&SlaveStatusClass::RoboticArmClose) > 0),
+                                                    },
+                                                    attach(0, 1, 1, 1) = &ToggleButton {
                                                         set_icon_name: "object-rotate-left-symbolic",
                                                         set_can_focus: false,
                                                         set_can_target: false,
                                                         set_active: track!(model.changed(SlaveModel::status()), model.get_target_status(&SlaveStatusClass::MotionRotate) < -JOYSTICK_DISPLAY_THRESHOLD),
                                                     },
-                                                    attach(2, 0, 1, 1) = &ToggleButton {
+                                                    attach(2, 1, 1, 1) = &ToggleButton {
                                                         set_icon_name: "object-rotate-right-symbolic",
                                                         set_can_focus: false,
                                                         set_can_target: false,
                                                         set_active: track!(model.changed(SlaveModel::status()), model.get_target_status(&SlaveStatusClass::MotionRotate) > JOYSTICK_DISPLAY_THRESHOLD),
                                                     },
-                                                    attach(0, 2, 1, 1) = &ToggleButton {
+                                                    attach(0, 3, 1, 1) = &ToggleButton {
                                                         set_icon_name: "go-bottom-symbolic",
                                                         set_can_focus: false,
                                                         set_can_target: false,
                                                         set_active: track!(model.changed(SlaveModel::status()), model.get_target_status(&SlaveStatusClass::MotionZ) < -JOYSTICK_DISPLAY_THRESHOLD),
                                                     },
-                                                    attach(2, 2, 1, 1) = &ToggleButton {
+                                                    attach(2, 3, 1, 1) = &ToggleButton {
                                                         set_icon_name: "go-top-symbolic",
                                                         set_can_focus: false,
                                                         set_can_target: false,
                                                         set_active: track!(model.changed(SlaveModel::status()), model.get_target_status(&SlaveStatusClass::MotionZ) > JOYSTICK_DISPLAY_THRESHOLD),
                                                     },
-                                                    attach(1, 0, 1, 1) = &ToggleButton {
+                                                    attach(1, 1, 1, 1) = &ToggleButton {
                                                         set_icon_name: "go-up-symbolic",
                                                         set_can_focus: false,
                                                         set_can_target: false,
                                                         set_active: track!(model.changed(SlaveModel::status()), model.get_target_status(&SlaveStatusClass::MotionY) > JOYSTICK_DISPLAY_THRESHOLD),
                                                     },
-                                                    attach(0, 1, 1, 1) = &ToggleButton {
+                                                    attach(0, 2, 1, 1) = &ToggleButton {
                                                         set_icon_name: "go-previous-symbolic",
                                                         set_can_focus: false,
                                                         set_can_target: false,
                                                         set_active: track!(model.changed(SlaveModel::status()), model.get_target_status(&SlaveStatusClass::MotionX) < -JOYSTICK_DISPLAY_THRESHOLD),
                                                     },
-                                                    attach(2, 1, 1, 1) = &ToggleButton {
+                                                    attach(2, 2, 1, 1) = &ToggleButton {
                                                         set_icon_name: "go-next-symbolic",
                                                         set_can_focus: false,
                                                         set_can_target: false,
                                                         set_active: track!(model.changed(SlaveModel::status()), model.get_target_status(&SlaveStatusClass::MotionX) > JOYSTICK_DISPLAY_THRESHOLD),
                                                     },
-                                                    attach(1, 2, 1, 1) = &ToggleButton {
+                                                    attach(1, 3, 1, 1) = &ToggleButton {
                                                         set_icon_name: "go-down-symbolic",
                                                         set_can_focus: false,
                                                         set_can_target: false,
@@ -568,7 +590,7 @@ async fn tcp_main_handler(input_rate: u16,
             }
             if *idle.lock().await {
                 if current_millis() - *last_action_timestamp.lock().await >= IDLE_TIME_MILLIS {
-                    if let Err(err) = tcp_stream.write_all("{ \"x\": 0.0, \"y\": 0.0, \"z\": 0.0, \"rot\": 0.0 }".as_bytes()).await {
+                    if let Err(err) = tcp_stream.write_all("{ \"x\": 0.0, \"y\": 0.0, \"z\": 0.0, \"catch\": 0.0, \"rot\": 0.0 }".as_bytes()).await {
                         tcp_sender.send(SlaveTcpMsg::ConnectionLost(err)).await.unwrap_or_default();
                         break;
                     }
@@ -601,7 +623,7 @@ async fn tcp_main_handler(input_rate: u16,
                         Ok(packet) => {
                             send!(slave_sender, SlaveMsg::InformationsReceived(packet.info));
                         },
-                        Err(err) => eprintln!("无法识别来自于下位机的JSON数据包（{}）：“{}”", err.to_string(), json_string),
+                        Err(err) => eprintln!("无法识别来自于下位机的 JSON 数据包（{}）：“{}”", err.to_string(), json_string),
                     }
                 }
             }
@@ -750,15 +772,30 @@ impl MicroModel for SlaveModel {
             SlaveMsg::InputReceived(event) => {
                 match event {
                     InputSourceEvent::ButtonChanged(button, pressed) => {
-                        if let Some(status_class) = SlaveStatusClass::from_button(button) {
-                            if pressed {
-                                self.set_target_status(&status_class, !(self.get_target_status(&status_class) != 0) as i16);
-                            }
+                        match SlaveStatusClass::from_button(button) {
+                            Some(status_class @ SlaveStatusClass::RoboticArmOpen) => {
+                                self.set_target_status(&status_class, if pressed { 1 } else { 0 });
+                            },
+                            Some(status_class) => {
+                                if pressed {
+                                    self.set_target_status(&status_class, !(self.get_target_status(&status_class) != 0) as i16);
+                                }
+                            },
+                            None => println!("未定义行为的手柄按键 {} 被{}", button, if pressed { "按下" } else { "抬起" }),
                         }
                     },
                     InputSourceEvent::AxisChanged(axis, value) => {
-                        if let Some(status_class) = SlaveStatusClass::from_axis(axis) {
-                            self.set_target_status(&status_class, value.saturating_mul(if axis == 1 || axis == 3 { -1 } else { 1 }));
+                        match SlaveStatusClass::from_axis(axis) {
+                            Some(status_class @ SlaveStatusClass::RoboticArmClose) => {
+                                match value {
+                                    0..=i16::MAX => self.set_target_status(&status_class, 1),
+                                    i16::MIN..=-1 => self.set_target_status(&status_class, 0),
+                                }
+                            },
+                            Some(status_class) => {
+                                self.set_target_status(&status_class, value.saturating_mul(if axis == 1 || axis == 3 { -1 } else { 1 }));
+                            },
+                            None => println!("未定义行为的手柄摇杆 {} 值改变为 {}", axis, value),
                         }
                     },
                 }
@@ -769,7 +806,7 @@ impl MicroModel for SlaveModel {
                     }
                     match sender.try_send(SlaveTcpMsg::ControlUpdated(control_packet)) {
                         Ok(_) => (),
-                        Err(err) => println!("Cannot send control input: {}", err.to_string()),
+                        Err(err) => println!("无法发送控制输入：{}", err.to_string()),
                     }
                 }
             },
@@ -881,7 +918,7 @@ impl MicroModel for SlaveModel {
                 if let Some(sender) = self.get_tcp_msg_sender() {
                     match sender.try_send(SlaveTcpMsg::ControlUpdated(ControlPacket::from_status_map(&self.get_status().lock().unwrap()))) {
                         Ok(_) => (),
-                        Err(err) => println!("Cannot send updated status: {}", err.to_string()),
+                        Err(err) => println!("无法更新机位状态：{}", err.to_string()),
                     }
                 }
             },
@@ -997,6 +1034,7 @@ pub struct ControlPacket {
     y: f32,
     z: f32,
     rot: f32,
+    catch: f32,
     depth_locked: bool,
     direction_locked: bool,
 }
@@ -1020,6 +1058,7 @@ impl ControlPacket {
             y                : map_value(status_map.get(&SlaveStatusClass::MotionY).unwrap_or(&0)),
             z                : map_value(status_map.get(&SlaveStatusClass::MotionZ).unwrap_or(&0)),
             rot              : map_value(status_map.get(&SlaveStatusClass::MotionRotate).unwrap_or(&0)),
+            catch            : (*status_map.get(&SlaveStatusClass::RoboticArmOpen).unwrap_or(&0) * 1 + *status_map.get(&SlaveStatusClass::RoboticArmClose).unwrap_or(&0) * -1) as f32,
             depth_locked     : status_map.get(&SlaveStatusClass::DepthLocked).map(|x| *x >= 1).unwrap_or(false),
             direction_locked : status_map.get(&SlaveStatusClass::DirectionLocked).map(|x| *x >= 1).unwrap_or(false),
         }

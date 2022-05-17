@@ -95,6 +95,10 @@ impl VideoSource {
             VideoSource::RTSP(url) => {
                 let rtspsrc = gst::ElementFactory::make("rtspsrc", Some("source")).map_err(|_| "Missing element: rtspsrc")?;
                 rtspsrc.set_property("location", url.to_string());
+                rtspsrc.set_property("user-id", url.username());
+                if let Some(password) = url.password() {
+                    rtspsrc.set_property("user-pw", password);
+                }
                 elements.push(rtspsrc);
             },
         }
