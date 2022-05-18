@@ -142,11 +142,12 @@ impl MicroModel for SlaveVideoModel {
                     let colorspace_conversion = config.get_colorspace_conversion().clone();
                     let use_decodebin = config.get_use_decodebin().clone();
                     let appsink_leaky_enabled = config.get_appsink_queue_leaky_enabled().clone();
-                    
+                    let latency = config.get_video_latency().clone();
                     drop(config); // 结束 &self 的生命周期
                     
                     match if use_decodebin { super::video::create_decodebin_pipeline(video_source, appsink_leaky_enabled) } else { super::video::create_pipeline(
                         video_source,
+                        latency,
                         colorspace_conversion,
                         video_decoder,
                         appsink_leaky_enabled) } {

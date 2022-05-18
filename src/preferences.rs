@@ -69,7 +69,7 @@ pub fn get_image_path() -> PathBuf {
 #[derive(Derivative, Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[derivative(Default)]
 pub struct PreferencesModel {
-    #[derivative(Default(value="0"))]
+    #[derivative(Default(value="1"))]
     pub initial_slave_num: u8,
     #[derivative(Default(value="get_video_path()"))]
     pub video_save_path: PathBuf,
@@ -81,7 +81,7 @@ pub struct PreferencesModel {
     pub default_video_encoder: VideoEncoder,
     #[derivative(Default(value="Url::from_str(\"tcp://192.168.137.219:8888\").unwrap()"))]
     pub default_slave_url: Url,
-    #[derivative(Default(value="Url::from_str(\"rtp://127.0.0.1:5600\").unwrap()"))]
+    #[derivative(Default(value="Url::from_str(\"rtp://127.0.0.1:5600?encoding-name=H264\").unwrap()"))]
     pub default_video_url: Url,
     #[derivative(Default(value="60"))]
     pub default_input_sending_rate: u16,
@@ -99,6 +99,8 @@ pub struct PreferencesModel {
     pub default_use_decodebin: bool,
     #[derivative(Default(value="false"))]
     pub video_sync_record_use_separate_directory: bool,
+    #[derivative(Default(value="200"))]
+    pub default_video_latency: u32,
 }
 
 impl PreferencesModel {
@@ -128,6 +130,7 @@ pub enum PreferencesMsg {
     SetDefaultUseDecodebin(bool),
     SetDefaultAppSinkQueueLeakyEnabled(bool),
     SetVideoSyncRecordUseSeparateDirectory(bool),
+    SetDefaultVideoLatency(u32),
     SetDefaultVideoUrl(Url),
     SetDefaultSlaveUrl(Url),
     SetPipelineTimeout(Duration),
@@ -164,7 +167,7 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                     set_description: Some("配置上位机的多机位功能"),
                     add = &ActionRow {
                         set_title: "初始机位",
-                        set_subtitle: "程序启动时的初始机位数量",
+                        set_subtitle: "上位机启动时的初始机位数量",
                         add_suffix = &SpinButton::with_range(0.0, 12.0, 1.0) {
                             set_value: track!(model.changed(PreferencesModel::initial_slave_num()), model.initial_slave_num as f64),
                             set_digits: 0,
@@ -294,6 +297,21 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                         set_enable_expansion: track!(model.changed(PreferencesModel::default_use_decodebin()), !*model.get_default_use_decodebin()),
                         connect_enable_expansion_notify(sender) => move |expander| {
                             send!(sender, PreferencesMsg::SetDefaultUseDecodebin(!expander.enables_expansion()));
+                        },
+                        add_row = &ActionRow {
+                            set_title: "默认接收缓冲区延迟",
+                            set_subtitle: "若接收的视频流出现卡顿、花屏等现象，可以增加接收缓冲区延迟，牺牲视频的实时性来换取流畅度的提升",
+                            add_suffix = &SpinButton::with_range(0.0, 60000.0, 1.0) {
+                                set_value: track!(model.changed(PreferencesModel::default_video_latency()), model.default_video_latency as f64),
+                                set_digits: 0,
+                                set_valign: Align::Center,
+                                connect_changed(sender) => move |button| {
+                                    send!(sender, PreferencesMsg::SetDefaultVideoLatency(button.value() as u32));
+                                }
+                            },
+                            add_suffix = &Label {
+                                set_label: "毫秒",
+                            },
                         },
                         add_row = &ComboRow {
                             set_title: "默认解码器",
@@ -518,6 +536,7 @@ impl ComponentUpdate<AppModel> for PreferencesModel {
                 self.set_default_use_decodebin(use_decodebin);
             },
             PreferencesMsg::SetVideoSyncRecordUseSeparateDirectory(use_separate_directory) => self.set_video_sync_record_use_separate_directory(use_separate_directory),
+            PreferencesMsg::SetDefaultVideoLatency(latency) => self.set_default_video_latency(latency),
         }
         send!(parent_sender, AppMsg::PreferencesUpdated(self.clone()));
     }

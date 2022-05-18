@@ -19,7 +19,7 @@
 use std::{str::FromStr, fmt::Debug};
 
 use glib::Sender;
-use gtk::{Align, Box as GtkBox, Entry, Inhibit, Orientation, ScrolledWindow, Separator, StringList, Switch, Viewport, prelude::*};
+use gtk::{Align, Label, Box as GtkBox, Entry, Inhibit, Orientation, ScrolledWindow, Separator, StringList, Switch, Viewport, SpinButton, prelude::*};
 use adw::{ActionRow, PreferencesGroup, prelude::*, ComboRow, ExpanderRow};
 use relm4::{WidgetPlus, send, MicroModel, MicroWidgets};
 use relm4_macros::micro_widget;
@@ -58,16 +58,11 @@ pub struct SlaveConfigModel {
     pub reencode_recording_video: bool,
     #[derivative(Default(value="PreferencesModel::default().default_appsink_queue_leaky_enabled"))]
     pub appsink_queue_leaky_enabled: bool,
+    #[derivative(Default(value="PreferencesModel::default().default_video_latency"))]
+    pub video_latency: u32,
 }
 
 impl SlaveConfigModel {
-    pub fn new(slave_url: Url, video_url: Url) -> Self {
-        Self {
-            slave_url, video_url, 
-            ..Default::default()
-        }
-    }
-
     pub fn from_preferences(preferences: &PreferencesModel) -> Self {
         Self {
             slave_url: preferences.get_default_slave_url().clone(),
@@ -79,6 +74,7 @@ impl SlaveConfigModel {
             video_encoder: preferences.get_default_video_encoder().clone(),
             reencode_recording_video: preferences.get_default_reencode_recording_video().clone(),
             appsink_queue_leaky_enabled: preferences.get_default_appsink_queue_leaky_enabled().clone(),
+            video_latency: preferences.get_default_video_latency().clone(),
             ..Default::default()
         }
     }
@@ -122,6 +118,7 @@ impl MicroModel for SlaveConfigModel {
                 self.set_reencode_recording_video(reencode)
             },
             SlaveConfigMsg::SetAppSinkQueueLeakyEnabled(leaky) => self.set_appsink_queue_leaky_enabled(leaky),
+            SlaveConfigMsg::SetVideoLatency(latency) => self.set_video_latency(latency),
         }
         send!(parent_sender, SlaveMsg::ConfigUpdated);
     }
@@ -150,6 +147,7 @@ pub enum SlaveConfigMsg {
     SetVideoEncoderCodecProvider(VideoCodecProvider),
     SetReencodeRecordingVideo(bool),
     SetAppSinkQueueLeakyEnabled(bool),
+    SetVideoLatency(u32),
 }
 
 #[micro_widget(pub)]
@@ -163,7 +161,7 @@ impl MicroWidgets<SlaveConfigModel> for SlaveConfigWidgets {
                 set_orientation: Orientation::Horizontal,
             },
             append = &ScrolledWindow {
-                set_width_request: 320,
+                set_width_request: 340,
                 set_child = Some(&Viewport) {
                     set_child = Some(&GtkBox) {
                         set_spacing: 20,
@@ -283,6 +281,21 @@ impl MicroWidgets<SlaveConfigModel> for SlaveConfigWidgets {
                                 set_enable_expansion: track!(model.changed(SlaveConfigModel::use_decodebin()), !*model.get_use_decodebin()),
                                 connect_enable_expansion_notify(sender) => move |expander| {
                                     send!(sender, SlaveConfigMsg::SetUsePlaybin(!expander.enables_expansion()));
+                                },
+                                add_row = &ActionRow {
+                                    set_title: "接收缓冲区延迟",
+                                    set_subtitle: "可以增加接收缓冲区延迟，牺牲视频的实时性来换取流畅度的提升",
+                                    add_suffix = &SpinButton::with_range(0.0, 60000.0, 1.0) {
+                                        set_value: track!(model.changed(SlaveConfigModel::video_latency()), model.video_latency as f64),
+                                        set_digits: 0,
+                                        set_valign: Align::Center,
+                                        connect_changed(sender) => move |button| {
+                                            send!(sender, SlaveConfigMsg::SetVideoLatency(button.value() as u32));
+                                        }
+                                    },
+                                    add_suffix = &Label {
+                                        set_label: "毫秒",
+                                    },
                                 },
                                 add_row = &ComboRow {
                                     set_title: "色彩空间转换",

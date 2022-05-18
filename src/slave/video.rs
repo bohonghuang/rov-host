@@ -75,7 +75,7 @@ impl VideoSource {
         }
     }
     
-    fn gst_src_elements(&self, video_decoder: VideoDecoder) -> Result<Vec<Element>, String> {
+    fn gst_src_elements(&self, latency: u32, video_decoder: VideoDecoder) -> Result<Vec<Element>, String> {
         let mut elements = Vec::new();
         match self {
             VideoSource::UDP(url) | VideoSource::RTP(url) => {
@@ -91,6 +91,10 @@ impl VideoSource {
                     udpsrc.set_property("caps", caps_src);
                 }
                 elements.push(udpsrc);
+                if latency > 0 {
+                    let rtpjitterbuffer = gst::ElementFactory::make("rtpjitterbuffer", None).map_err(|_| "Missing element: rtpjitterbuffer")?;
+                    elements.push(rtpjitterbuffer);
+                }
             },
             VideoSource::RTSP(url) => {
                 let rtspsrc = gst::ElementFactory::make("rtspsrc", Some("source")).map_err(|_| "Missing element: rtspsrc")?;
@@ -99,6 +103,7 @@ impl VideoSource {
                 if let Some(password) = url.password() {
                     rtspsrc.set_property("user-pw", password);
                 }
+                rtspsrc.set_property("latency", latency);
                 elements.push(rtspsrc);
             },
         }
@@ -404,9 +409,9 @@ pub fn create_decodebin_pipeline(source: VideoSource, appsink_queue_leaky_enable
     Ok(pipeline)
 }
 
-pub fn create_pipeline(source: VideoSource, colorspace_conversion: ColorspaceConversion, decoder: VideoDecoder, appsink_queue_leaky_enabled: bool) -> Result<gst::Pipeline, String> {
+pub fn create_pipeline(source: VideoSource, latency: u32, colorspace_conversion: ColorspaceConversion, decoder: VideoDecoder, appsink_queue_leaky_enabled: bool) -> Result<gst::Pipeline, String> {
     let pipeline = gst::Pipeline::new(None);
-    let src_elements = source.gst_src_elements(decoder)?;
+    let src_elements = source.gst_src_elements(latency, decoder)?;
     let (video_src, depay_elements) = src_elements.split_first().ok_or_else(|| "Source element is empty")?;
     let video_src = video_src.clone();
     let appsink = gst::ElementFactory::make("appsink", Some("display")).map_err(|_| "Missing element: appsink")?;
