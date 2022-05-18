@@ -39,12 +39,6 @@ use crate::preferences::PreferencesModel;
 use crate::slave::{SlaveModel, MyComponent, SlaveMsg, slave_config::SlaveConfigModel, slave_video::SlaveVideoMsg};
 use crate::ui::generic::error_message;
 
-use lazy_static::lazy_static;
-
-lazy_static! {
-    pub static ref OS: os_info::Info = os_info::get();
-}
-
 struct AboutModel {}
 enum AboutMsg {}
 impl Model for AboutModel {
@@ -328,10 +322,8 @@ impl AppUpdate for AppModel {
             AppMsg::DispatchInputEvent(InputEvent(source, event)) => {
                 for slave in self.slaves.iter() {
                     let slave_model = slave.model().unwrap();
-                    if let Some(target_input_source) = slave_model.get_input_source() {
-                        if target_input_source.eq(&source) {
-                            slave_model.input_event_sender.send(event.clone()).unwrap();
-                        }
+                    if slave_model.get_input_sources().contains(&source) {
+                        slave_model.input_event_sender.send(event.clone()).unwrap();
                     }
                 }
             },
@@ -399,7 +391,6 @@ impl AppUpdate for AppModel {
 fn main() {
     gst::init().expect("无法初始化 GStreamer");
     gtk::init().map(|_| adw::init()).expect("无法初始化 GTK4");
-    
     let model = AppModel {
         preferences: Rc::new(RefCell::new(PreferencesModel::load_or_default())),
         ..Default::default()

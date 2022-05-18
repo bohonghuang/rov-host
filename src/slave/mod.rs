@@ -22,24 +22,23 @@ pub mod slave_config;
 pub mod slave_video;
 pub mod firmware_update;
 
-use std::{cell::RefCell, collections::{HashMap, VecDeque}, rc::Rc, sync::{Arc, Mutex}, fmt::Debug, time::{Duration, SystemTime}, ops::Deref, io::Error as IOError};
+use std::{cell::RefCell, collections::{HashMap, VecDeque, HashSet}, rc::Rc, sync::{Arc, Mutex}, fmt::Debug, time::{Duration, SystemTime}, ops::Deref, io::Error as IOError};
 use async_std::{net::TcpStream, prelude::*, task::{JoinHandle, self}};
 
 use glib::{PRIORITY_DEFAULT, Sender, WeakRef, DateTime, MainContext};
 use glib_macros::clone;
-use gtk::{prelude::*, Align, Box as GtkBox, Button, CenterBox, CheckButton, Frame, Grid, Image, Label, ListBox, MenuButton, Orientation, Overlay, Popover, Revealer, Switch, ToggleButton, Widget, Separator, PackType, Inhibit};
+use gtk::{prelude::*, Align, Box as GtkBox, Button as GtkButton, CenterBox, CheckButton, Frame, Grid, Image, Label, ListBox, MenuButton, Orientation, Overlay, Popover, Revealer, Switch, ToggleButton, Widget, Separator, PackType, Inhibit};
 use adw::{ApplicationWindow, ToastOverlay, Toast, Flap, FlapFoldPolicy};
 use relm4::{WidgetPlus, factory::{FactoryPrototype, FactoryVec, positions::GridPosition}, send, MicroWidgets, MicroModel, MicroComponent};
 use relm4_macros::micro_widget;
 
-use os_info::Type as OSType;
 use serde::{Serialize, Deserialize};
 use derivative::*;
 
-use crate::{input::{InputSource, InputSourceEvent, InputSystem}, slave::param_tuner::SlaveParameterTunerMsg};
+use crate::{input::{InputSource, InputSourceEvent, InputSystem, Button, Axis}, slave::param_tuner::SlaveParameterTunerMsg};
 use crate::preferences::PreferencesModel;
 use crate::ui::generic::error_message;
-use crate::{OS, AppMsg};
+use crate::AppMsg;
 use self::{param_tuner::SlaveParameterTunerModel, slave_config::{SlaveConfigModel, SlaveConfigMsg}, slave_video::{SlaveVideoModel, SlaveVideoMsg}, firmware_update::SlaveFirmwareUpdaterModel};
 
 #[tracker::track(pub)]
@@ -61,7 +60,7 @@ pub struct SlaveModel {
     pub sync_recording: bool,
     #[no_eq]
     pub preferences: Rc<RefCell<PreferencesModel>>,
-    pub input_source: Option<InputSource>,
+    pub input_sources: HashSet<InputSource>,
     #[no_eq]
     pub input_system: Rc<InputSystem>,
     #[no_eq]
@@ -125,39 +124,23 @@ pub enum SlaveStatusClass {
 }
 
 impl SlaveStatusClass {
-    pub fn from_button(button: u8) -> Option<SlaveStatusClass> {
-        match (*OS).os_type() {
-            OSType::Windows => {
-                match button {
-                    5 => Some(SlaveStatusClass::RoboticArmOpen),
-                    8 => Some(SlaveStatusClass::DepthLocked),
-                    9 => Some(SlaveStatusClass::DirectionLocked),
-                    _ => None,
-                }
-            },
-            _ => {
-                match button {
-                    7 => Some(SlaveStatusClass::DepthLocked),
-                    8 => Some(SlaveStatusClass::DirectionLocked),
-                    10 => Some(SlaveStatusClass::RoboticArmOpen),
-                    _ => None,
-                }
-            }
+    pub fn from_button(button: Button) -> Option<SlaveStatusClass> {
+        match button {
+            Button::LeftStick => Some(SlaveStatusClass::DepthLocked),
+            Button::RightStick => Some(SlaveStatusClass::DirectionLocked),
+            Button::RightShoulder => Some(SlaveStatusClass::RoboticArmOpen),
+            _ => None,
         }
     }
     
-    pub fn from_axis(axis: u8) -> Option<SlaveStatusClass> {
-        match (*OS).os_type() {
-            _ => {
-                match axis {
-                    0 => Some(SlaveStatusClass::MotionX),
-                    1 => Some(SlaveStatusClass::MotionY),
-                    2 => Some(SlaveStatusClass::MotionRotate),
-                    3 => Some(SlaveStatusClass::MotionZ),
-                    5 => Some(SlaveStatusClass::RoboticArmClose),
-                    _ => None
-                }
-            }
+    pub fn from_axis(axis: Axis) -> Option<SlaveStatusClass> {
+        match axis {
+            Axis::LeftX => Some(SlaveStatusClass::MotionX),
+            Axis::LeftY => Some(SlaveStatusClass::MotionY),
+            Axis::RightX => Some(SlaveStatusClass::MotionRotate),
+            Axis::RightY => Some(SlaveStatusClass::MotionZ),
+            Axis::TriggerRight => Some(SlaveStatusClass::RoboticArmClose),
+            _ => None
         }
     }
 }
@@ -191,7 +174,7 @@ impl SlaveModel {
     }
 }
 
-pub fn input_sources_list_box(input_source: &Option<InputSource>, input_system: &InputSystem, sender: &Sender<SlaveMsg>) -> Widget {
+pub fn input_sources_list_box(input_sources: &HashSet<InputSource>, input_system: &InputSystem, sender: &Sender<SlaveMsg>) -> Widget {
     let sources = input_system.get_sources().unwrap();
     if sources.is_empty() {
         return Label::builder()
@@ -207,13 +190,13 @@ pub fn input_sources_list_box(input_source: &Option<InputSource>, input_system: 
     for (source, name) in sources {
         let radio_button = CheckButton::builder().label(&name).build();
         let sender = sender.clone();
-        radio_button.set_active(match input_source {
-            Some(current_souce) => current_souce.eq(&source),
-            None => false,
-        });
-        
+        radio_button.set_active(input_sources.contains(&source));
         radio_button.connect_toggled(move |button| {
-            sender.send(SlaveMsg::SetInputSource(if button.is_active() { Some(source.clone()) } else { None } )).unwrap();
+            if button.is_active() {
+                send!(sender, SlaveMsg::AddInputSource(source.clone()));
+            } else {
+                send!(sender, SlaveMsg::RemoveInputSource(source.clone()));
+            }
         });
         {
             let radio_button = radio_button.clone();
@@ -241,7 +224,7 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                         set_hexpand: true,
                         set_halign: Align::Start,
                         set_spacing: 5,
-                        append = &Button {
+                        append = &GtkButton {
                             set_icon_name: "network-transmit-symbolic",
                             set_sensitive: track!(model.changed(SlaveModel::connected()), model.connected != None),
                             set_css_classes?: watch!(model.connected.map(|x| if x { vec!["circular", "suggested-action"] } else { vec!["circular"] }).as_ref()),
@@ -250,7 +233,7 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                                 send!(sender, SlaveMsg::ToggleConnect);
                             },
                         },
-                        append = &Button {
+                        append = &GtkButton {
                             set_icon_name: "video-display-symbolic",
                             set_sensitive: track!(model.changed(SlaveModel::recording()) || model.changed(SlaveModel::sync_recording()) || model.changed(SlaveModel::polling()), model.get_recording().is_some() && model.get_polling().is_some() && !model.sync_recording),
                             set_css_classes?: watch!(model.polling.map(|x| if x { vec!["circular", "destructive-action"] } else { vec!["circular"] }).as_ref()),
@@ -260,7 +243,7 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                             },
                         },
                         append = &Separator {},
-                        append = &Button {
+                        append = &GtkButton {
                             set_icon_name: "camera-photo-symbolic",
                             set_sensitive: watch!(model.video.model().get_pixbuf().is_some()),
                             set_css_classes: &["circular"],
@@ -269,7 +252,7 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                                 send!(sender, SlaveMsg::TakeScreenshot);
                             },
                         },
-                        append = &Button {
+                        append = &GtkButton {
                             set_icon_name: "camera-video-symbolic",
                             set_sensitive: track!(model.changed(SlaveModel::sync_recording()) || model.changed(SlaveModel::polling()) || model.changed(SlaveModel::recording()), !model.sync_recording && model.recording != None &&  model.polling == Some(true)),
                             set_css_classes?: watch!(model.recording.map(|x| if x { vec!["circular", "destructive-action"] } else { vec!["circular"] }).as_ref()),
@@ -300,7 +283,7 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                                             set_margin_end: 10,
                                             set_markup: "<b>输入设备</b>"
                                         },
-                                        set_end_widget = Some(&Button) {
+                                        set_end_widget = Some(&GtkButton) {
                                             set_icon_name: "view-refresh-symbolic",
                                             set_css_classes: &["circular"],
                                             set_tooltip_text: Some("刷新输入设备"),
@@ -310,7 +293,7 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                                         },
                                     },
                                     append = &Frame {
-                                        set_child: track!(model.changed(SlaveModel::input_system()), Some(&input_sources_list_box(&model.input_source, &model.input_system ,&sender))),
+                                        set_child: track!(model.changed(SlaveModel::input_system()), Some(&input_sources_list_box(&model.input_sources, &model.input_system ,&sender))),
                                     },
                                     
                                 },
@@ -322,7 +305,7 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                         set_halign: Align::End,
                         set_spacing: 5,
                         set_margin_end: 5,
-                        append = &Button {
+                        append = &GtkButton {
                             set_icon_name: "software-update-available-symbolic",
                             set_css_classes: &["circular"],
                             set_tooltip_text: Some("固件更新"),
@@ -330,7 +313,7 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                                 send!(sender, SlaveMsg::OpenFirmwareUpater);
                             },
                         },
-                        append = &Button {
+                        append = &GtkButton {
                             set_icon_name: "preferences-other-symbolic",
                             set_css_classes: &["circular"],
                             set_tooltip_text: Some("参数调校"),
@@ -381,7 +364,7 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                                     set_margin_all: 5,
                                     set_width_request: 50,
                                     set_spacing: 5,
-                                    append = &Button {
+                                    append = &GtkButton {
                                         set_child = Some(&CenterBox) {
                                             set_center_widget = Some(&Label) {
                                                 set_margin_start: 10,
@@ -539,7 +522,8 @@ pub enum SlaveMsg {
     PollingChanged(bool),
     RecordingChanged(bool),
     TakeScreenshot,
-    SetInputSource(Option<InputSource>),
+    AddInputSource(InputSource),
+    RemoveInputSource(InputSource),
     SetSlaveStatus(SlaveStatusClass, i16),
     UpdateInputSources,
     ToggleDisplayInfo,
@@ -760,8 +744,11 @@ impl MicroModel for SlaveModel {
                     None => (),
                 }
             },
-            SlaveMsg::SetInputSource(source) => {
-                self.set_input_source(source);
+            SlaveMsg::AddInputSource(source) => {
+                self.get_mut_input_sources().insert(source);
+            },
+            SlaveMsg::RemoveInputSource(source) => {
+                self.get_mut_input_sources().remove(&source);
             },
             SlaveMsg::UpdateInputSources => {
                 self.get_mut_input_system();
@@ -781,21 +768,21 @@ impl MicroModel for SlaveModel {
                                     self.set_target_status(&status_class, !(self.get_target_status(&status_class) != 0) as i16);
                                 }
                             },
-                            None => println!("未定义行为的手柄按键 {} 被{}", button, if pressed { "按下" } else { "抬起" }),
+                            None => (),
                         }
                     },
                     InputSourceEvent::AxisChanged(axis, value) => {
                         match SlaveStatusClass::from_axis(axis) {
                             Some(status_class @ SlaveStatusClass::RoboticArmClose) => {
                                 match value {
-                                    0..=i16::MAX => self.set_target_status(&status_class, 1),
-                                    i16::MIN..=-1 => self.set_target_status(&status_class, 0),
+                                    1..=i16::MAX => self.set_target_status(&status_class, 1),
+                                    i16::MIN..=0 => self.set_target_status(&status_class, 0),
                                 }
                             },
                             Some(status_class) => {
-                                self.set_target_status(&status_class, value.saturating_mul(if axis == 1 || axis == 3 { -1 } else { 1 }));
+                                self.set_target_status(&status_class, value.saturating_mul(if axis == Axis::LeftY || axis == Axis::RightY { -1 } else { 1 }));
                             },
-                            None => println!("未定义行为的手柄摇杆 {} 值改变为 {}", axis, value),
+                            None => (),
                         }
                     },
                 }
