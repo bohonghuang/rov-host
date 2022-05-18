@@ -29,7 +29,7 @@ use strum::IntoEnumIterator;
 use derivative::*;
 use url::Url;
 
-use crate::{AppModel, AppMsg, slave::video::{VideoEncoder, VideoDecoder, ImageFormat, ColorspaceConversion, VideoCodec, VideoCodecProvider}};
+use crate::{AppColorScheme, AppModel, AppMsg, slave::video::{VideoEncoder, VideoDecoder, ImageFormat, ColorspaceConversion, VideoCodec, VideoCodecProvider}};
 
 pub fn get_data_path() -> PathBuf {
     const APP_DIR_NAME: &str = "rovhost";
@@ -71,6 +71,7 @@ pub fn get_image_path() -> PathBuf {
 pub struct PreferencesModel {
     #[derivative(Default(value="1"))]
     pub initial_slave_num: u8,
+    pub application_color_scheme: AppColorScheme,
     #[derivative(Default(value="get_video_path()"))]
     pub video_save_path: PathBuf,
     #[derivative(Default(value="get_image_path()"))]
@@ -134,6 +135,7 @@ pub enum PreferencesMsg {
     SetDefaultVideoUrl(Url),
     SetDefaultSlaveUrl(Url),
     SetPipelineTimeout(Duration),
+    SetApplicationColorScheme(Option<AppColorScheme>),
     SaveToFile,
     OpenVideoDirectory,
     OpenImageDirectory,
@@ -163,6 +165,25 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                 set_title: "通用",
                 set_icon_name: Some("view-grid-symbolic"),
                 add = &PreferencesGroup {
+                    set_title: "外观",
+                    set_description: Some("更改上位机的外观设置"),
+                    add = &ComboRow {
+                        set_title: "配色方案",
+                        set_subtitle: "上位机界面使用的配色方案",
+                        set_model: Some(&{
+                            let model = StringList::new(&[]);
+                            for value in AppColorScheme::iter() {
+                                model.append(&value.to_string());
+                            }
+                            model
+                        }),
+                        set_selected: track!(model.changed(PreferencesModel::application_color_scheme()), AppColorScheme::iter().position(|x| x == model.application_color_scheme).unwrap() as u32),
+                        connect_selected_notify(sender) => move |row| {
+                            send!(sender, PreferencesMsg::SetApplicationColorScheme(Some(AppColorScheme::iter().nth(row.selected() as usize).unwrap())))
+                        },
+                    },
+                },
+                add = &PreferencesGroup {
                     set_title: "机位",
                     set_description: Some("配置上位机的多机位功能"),
                     add = &ActionRow {
@@ -177,7 +198,7 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                             }
                         }
                     }
-                }
+                },
             },
             add = &PreferencesPage {
                 set_title: "网络",
@@ -489,12 +510,17 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
             },
         }
     }
+    
+    fn post_init() {
+        
+    }
 }
 
 impl ComponentUpdate<AppModel> for PreferencesModel {
     fn init_model(parent_model: &AppModel) -> Self {
         parent_model.preferences.borrow().clone()
     }
+    
     fn update(
         &mut self,
         msg: PreferencesMsg,
@@ -537,6 +563,12 @@ impl ComponentUpdate<AppModel> for PreferencesModel {
             },
             PreferencesMsg::SetVideoSyncRecordUseSeparateDirectory(use_separate_directory) => self.set_video_sync_record_use_separate_directory(use_separate_directory),
             PreferencesMsg::SetDefaultVideoLatency(latency) => self.set_default_video_latency(latency),
+            PreferencesMsg::SetApplicationColorScheme(scheme) => {
+                if let Some(scheme) = scheme {
+                    self.set_application_color_scheme(scheme);
+                }
+                send!(parent_sender, AppMsg::SetColorScheme(*self.get_application_color_scheme()));
+            },
         }
         send!(parent_sender, AppMsg::PreferencesUpdated(self.clone()));
     }

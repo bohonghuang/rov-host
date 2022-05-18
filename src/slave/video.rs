@@ -28,15 +28,14 @@ use cv::{core::VecN, types::VectorOfMat};
 use cv::{prelude::*, Result, imgproc, core::Size};
 
 use serde::{Serialize, Deserialize};
-
-use strum_macros::{EnumIter, EnumString as EnumFromString, Display as EnumToString};
+use strum_macros::{EnumIter, Display as EnumToString};
 use url::Url;
 
 use crate::async_glib::{Future, Promise};
 
 use super::slave_config::SlaveConfigModel;
 
-#[derive(EnumIter, EnumToString, EnumFromString, PartialEq, Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(EnumIter, EnumToString, PartialEq, Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum ImageFormat {
     JPEG, PNG, TIFF, BMP
 }
@@ -118,7 +117,7 @@ impl VideoSource {
     }
 }
 
-#[derive(EnumIter, EnumToString, EnumFromString, PartialEq, Clone, Debug)]
+#[derive(EnumIter, EnumToString, PartialEq, Clone, Debug)]
 pub enum VideoAlgorithm {
     CLAHE
 }
@@ -269,7 +268,7 @@ impl VideoDecoder {
     }
 }
 
-#[derive(EnumIter, EnumFromString, EnumToString, PartialEq, Clone, Debug, Serialize, Deserialize, Copy)]
+#[derive(EnumIter, EnumToString, PartialEq, Clone, Debug, Serialize, Deserialize, Copy)]
 pub enum ColorspaceConversion {
     CPU, CUDA, D3D11
 }

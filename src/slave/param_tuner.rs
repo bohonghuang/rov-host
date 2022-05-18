@@ -910,6 +910,7 @@ impl MicroModel for SlaveParameterTunerModel {
                         propeller_model.set_deadzone_upper(propeller.deadzone_upper.max(propeller.deadzone_lower));
                         propeller_model.set_power_positive(propeller.power_positive);
                         propeller_model.set_power_negative(propeller.power_negative);
+                        propeller_model.set_reversed(propeller.reversed);
                         propeller_model.set_enabled(propeller.enabled);
                     }
                 }

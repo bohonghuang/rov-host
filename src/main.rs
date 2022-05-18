@@ -28,14 +28,16 @@ use std::{fs, cell::RefCell, net::Ipv4Addr, rc::Rc, ops::Deref, str::FromStr};
 
 use glib::{MainContext, clone, Sender, WeakRef, DateTime, PRIORITY_DEFAULT};
 use gtk::{AboutDialog, Align, Box as GtkBox, Grid, Image, Inhibit, Label, MenuButton, Orientation, Stack, prelude::*, Button, ToggleButton, Separator, License};
-use adw::{ApplicationWindow, CenteringPolicy, ColorScheme, HeaderBar, StatusPage, StyleManager, prelude::*};
+use adw::{ApplicationWindow, CenteringPolicy, ColorScheme, StyleManager, HeaderBar, StatusPage, prelude::*};
 use relm4::{AppUpdate, ComponentUpdate, Model, RelmApp, RelmComponent, Widgets, actions::{RelmAction, RelmActionGroup}, factory::FactoryVec, send, new_stateless_action, new_action_group};
 use relm4_macros::widget;
 
+use serde::{Serialize, Deserialize};
+use strum_macros::EnumIter;
 use derivative::*;
 
 use crate::input::{InputSystem, InputEvent};
-use crate::preferences::PreferencesModel;
+use crate::preferences::{PreferencesModel, PreferencesMsg};
 use crate::slave::{SlaveModel, MyComponent, SlaveMsg, slave_config::SlaveConfigModel, slave_video::SlaveVideoMsg};
 use crate::ui::generic::error_message;
 
@@ -75,6 +77,27 @@ impl ComponentUpdate<AppModel> for AboutModel {
     fn update(&mut self, _msg: AboutMsg, _components: &(), _sender: Sender<AboutMsg>, _parent_sender: Sender<AppMsg>) {}
 }
 
+#[derive(EnumIter, PartialEq, Clone, Copy, Debug, Serialize, Deserialize)]
+pub enum AppColorScheme {
+    FollowSystem, Light, Dark
+}
+
+impl ToString for AppColorScheme {
+    fn to_string(&self) -> String {
+        match self {
+            AppColorScheme::FollowSystem => "跟随系统",
+            AppColorScheme::Light => "浅色",
+            AppColorScheme::Dark => "暗色",
+        }.to_string()
+    }
+}
+
+impl Default for AppColorScheme {
+    fn default() -> Self {
+        Self::FollowSystem
+    }
+}
+
 #[tracker::track]
 #[derive(Derivative)]
 #[derivative(Default)]
@@ -99,17 +122,12 @@ impl Model for AppModel {
 
 new_action_group!(AppActionGroup, "main");
 new_stateless_action!(PreferencesAction, AppActionGroup, "preferences");
-new_stateless_action!(KeybindingsAction, AppActionGroup, "keybindings");
 new_stateless_action!(AboutDialogAction, AppActionGroup, "about");
-
-fn application_window() -> ApplicationWindow {
-    ApplicationWindow::builder().build()
-}
 
 #[widget(pub)]
 impl Widgets<AppModel, ()> for AppWidgets {
     view! {
-        app_window = application_window() -> ApplicationWindow {
+        app_window = ApplicationWindow::default() {
             set_title: Some("水下机器人上位机"),
             set_default_width: 1280,
             set_default_height: 720,
@@ -141,13 +159,6 @@ impl Widgets<AppModel, ()> for AppWidgets {
                         set_icon_name: "open-menu-symbolic",
                         set_focus_on_click: false,
                         set_valign: Align::Center,
-                    },
-                    pack_end = &Button {
-                        set_icon_name: "night-light-symbolic",
-                        set_tooltip_text: Some("切换配色方案"),
-                        connect_clicked(sender) => move |__button| {
-                            send!(sender, AppMsg::SwitchColorScheme);
-                        }
                     },
                     pack_end = &ToggleButton {
                         set_icon_name: "view-fullscreen-symbolic",
@@ -200,7 +211,6 @@ impl Widgets<AppModel, ()> for AppWidgets {
     menu! {
         main_menu: {
             "首选项"     => PreferencesAction,
-            // "键盘快捷键" => KeybindingsAction,
             "关于"       => AboutDialogAction,
         }
     }
@@ -216,20 +226,17 @@ impl Widgets<AppModel, ()> for AppWidgets {
     }
     
     fn post_init() {
+        send!(components.preferences.sender(), PreferencesMsg::SetApplicationColorScheme(None));
         let app_group = RelmActionGroup::<AppActionGroup>::new();
         
         let action_preferences: RelmAction<PreferencesAction> = RelmAction::new_stateless(clone!(@strong sender => move |_| {
             send!(sender, AppMsg::OpenPreferencesWindow);
-        }));
-        let action_keybindings: RelmAction<KeybindingsAction> = RelmAction::new_stateless(clone!(@strong sender => move |_| {
-            send!(sender, AppMsg::OpenKeybindingsWindow);
         }));
         let action_about: RelmAction<AboutDialogAction> = RelmAction::new_stateless(clone!(@strong sender => move |_| {
             send!(sender, AppMsg::OpenAboutDialog);
         }));
         
         app_group.add_action(action_preferences);
-        app_group.add_action(action_keybindings);
         app_group.add_action(action_about);
         app_window.insert_action_group("main", Some(&app_group.into_action_group()));
         for _ in 0..*model.get_preferences().borrow().get_initial_slave_num() {
@@ -252,12 +259,11 @@ pub enum AppMsg {
     DestroySlave(*const SlaveModel),
     DispatchInputEvent(InputEvent),
     PreferencesUpdated(PreferencesModel),
+    SetColorScheme(AppColorScheme),
     ToggleSyncRecording(WeakRef<ApplicationWindow>),
     SetFullscreened(bool),
     OpenAboutDialog,
     OpenPreferencesWindow,
-    OpenKeybindingsWindow,
-    SwitchColorScheme,
     StopInputSystem, 
 }
 
@@ -283,7 +289,6 @@ impl AppUpdate for AppModel {
             AppMsg::OpenPreferencesWindow => {
                 components.preferences.root_widget().present();
             },
-            AppMsg::OpenKeybindingsWindow => todo!(),
             AppMsg::NewSlave(app_window) => {
                 let index = self.get_slaves().len() as u8;
                 let mut slave_url: url::Url = self.get_preferences().borrow().get_default_slave_url().clone();
@@ -359,10 +364,6 @@ impl AppUpdate for AppModel {
                 },
                 None => (),
             },
-            AppMsg::SwitchColorScheme => {
-                let style_manager = StyleManager::default();
-                style_manager.set_color_scheme(if style_manager.is_dark() { ColorScheme::PreferLight } else { ColorScheme::ForceDark });
-            },
             AppMsg::StopInputSystem => {
                 self.input_system.stop();
             },
@@ -382,6 +383,11 @@ impl AppUpdate for AppModel {
                     send!(slave.sender(), SlaveMsg::DestroySlave);
                 }
             },
+            AppMsg::SetColorScheme(scheme) => StyleManager::default().set_color_scheme(match scheme {
+                AppColorScheme::FollowSystem => ColorScheme::Default,
+                AppColorScheme::Light => ColorScheme::ForceLight,
+                AppColorScheme::Dark => ColorScheme::ForceDark,
+            }),
         }
         true
     }
