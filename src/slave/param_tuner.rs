@@ -37,7 +37,8 @@ use super::SlaveMsg;
 pub enum SlaveParameterTunerMsg {
     SetPropellerLowerDeadzone(usize, i8),
     SetPropellerUpperDeadzone(usize, i8),
-    SetPropellerPower(usize, f64),
+    SetPropellerPowerPositive(usize, f64),
+    SetPropellerPowerNegative(usize, f64),
     SetPropellerReversed(usize, bool),
     SetPropellerEnabled(usize, bool),
     SetP(usize, f64),
@@ -57,19 +58,24 @@ pub enum SlaveParameterTunerMsg {
 #[derivative(Default)]
 pub struct PropellerModel {
     key: String,
-    lower: i8,
-    upper: i8,
+    deadzone_lower: i8,
+    deadzone_upper: i8,
     #[derivative(Default(value="0.75"))]
-    power: f64,
+    power_positive: f64,
+    #[derivative(Default(value="0.75"))]
+    power_negative: f64,
     #[derivative(Default(value="true"))]
     enabled: bool,
+    reversed: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 struct Propeller {
-    pub lower: i8,
-    pub upper: i8,
-    pub power: f64,
+    pub deadzone_lower: i8,
+    pub deadzone_upper: i8,
+    pub power_positive: f64,
+    pub power_negative: f64,
+    pub reversed: bool,
     pub enabled: bool,
 }
 
@@ -101,38 +107,21 @@ impl PropellerModel {
     
     fn vec_to_map(v: Vec<&PropellerModel>) -> HashMap<String, Propeller> {
         v.iter().map(|model| {
-            let PropellerModel { key, lower, upper, power, enabled, .. } = Deref::deref(model).clone();
-            (key, Propeller { lower, upper, power, enabled })
+            let PropellerModel { key, deadzone_lower, deadzone_upper, power_positive, power_negative, reversed, enabled, .. } = Deref::deref(model).clone();
+            (key, Propeller { deadzone_lower, deadzone_upper, power_positive, power_negative, reversed, enabled })
         }).collect()
     }
 
     fn key_to_string<'a, 'b : 'a>(key: &'b str) -> &'a str {
         match key {
-            "front_left" => "左前",
-            "front_right" => "右前",
-            "back_left" => "左后",
-            "back_right" => "右后",
-            "center_left" => "左中",
+            "front_left"   => "左前",
+            "front_right"  => "右前",
+            "back_left"    => "左后",
+            "back_right"   => "右后",
+            "center_left"  => "左中",
             "center_right" => "右中",
             key => key,
         }
-    }
-
-    fn is_reversed(&self) -> bool {
-        self.power < 0.0
-    }
-
-    fn set_reversed(&mut self, reversed: bool) {
-        self.set_power(if reversed { - self.power.abs() } else { self.power.abs() });
-    }
-
-    fn get_actual_power(&self) -> f64 {
-        self.power.abs()
-    }
-
-    fn set_actual_power(&mut self, power: f64) {
-        assert!(power >= 0.0);
-        self.set_power(if self.is_reversed() { -power} else { power });
     }
 }
 
@@ -171,7 +160,7 @@ impl ControlLoopModel {
 
     fn key_to_string<'a, 'b : 'a>(key: &'b str) -> &'a str {
         match key {
-            "depth_lock" => "深度锁定", 
+            "depth_lock"     => "深度锁定", 
             "direction_lock" => "方向锁定",
             key => key,
         }
@@ -227,7 +216,7 @@ impl FactoryPrototype for PropellerModel {
                             set_title: "反转",
                             add_suffix: reversed_switch = &Switch {
                                 set_valign: Align::Center,
-                                set_active: track!(self.changed(PropellerModel::power()), self.is_reversed()),
+                                set_active: track!(self.changed(PropellerModel::reversed()), *self.get_reversed()),
                                 connect_state_set(sender, key) => move |_switch, state| {
                                     send!(sender, SlaveParameterTunerMsg::SetPropellerReversed(key, state));
                                     Inhibit(false)
@@ -236,13 +225,13 @@ impl FactoryPrototype for PropellerModel {
                             set_activatable_widget: Some(&reversed_switch),
                         },
                         add_row = &ActionRow {
-                            set_title: "动力",
+                            set_title: "正向动力",
                             add_suffix = &SpinButton::with_range(0.01, 1.0, 0.01) {
-                                set_value: track!(self.changed(PropellerModel::power()), self.get_actual_power()),
+                                set_value: track!(self.changed(PropellerModel::power_positive()), *self.get_power_positive()),
                                 set_digits: 2,
                                 set_valign: Align::Center,
                                 connect_value_changed(key, sender) => move |button| {
-                                    send!(sender, SlaveParameterTunerMsg::SetPropellerPower(key, button.value()));
+                                    send!(sender, SlaveParameterTunerMsg::SetPropellerPowerPositive(key, button.value()));
                                 }
                             },
                         },
@@ -250,16 +239,37 @@ impl FactoryPrototype for PropellerModel {
                             set_child = Some(&Scale::with_range(Orientation::Horizontal, 0.01, 1.0, 0.01)) {
                                 set_width_request: CARD_MIN_WIDTH,
                                 set_round_digits: 2,
-                                set_value: track!(self.changed(PropellerModel::power()), self.get_actual_power() as f64),
+                                set_value: track!(self.changed(PropellerModel::power_positive()), *self.get_power_positive() as f64),
                                 connect_value_changed(key, sender) => move |scale| {
-                                    send!(sender, SlaveParameterTunerMsg::SetPropellerPower(key, scale.value()));
+                                    send!(sender, SlaveParameterTunerMsg::SetPropellerPowerPositive(key, scale.value()));
+                                }
+                            }
+                        },
+                        add_row = &ActionRow {
+                            set_title: "反向动力",
+                            add_suffix = &SpinButton::with_range(0.01, 1.0, 0.01) {
+                                set_value: track!(self.changed(PropellerModel::power_negative()), *self.get_power_negative()),
+                                set_digits: 2,
+                                set_valign: Align::Center,
+                                connect_value_changed(key, sender) => move |button| {
+                                    send!(sender, SlaveParameterTunerMsg::SetPropellerPowerNegative(key, button.value()));
+                                }
+                            },
+                        },
+                        add_row = &ActionRow {
+                            set_child = Some(&Scale::with_range(Orientation::Horizontal, 0.01, 1.0, 0.01)) {
+                                set_width_request: CARD_MIN_WIDTH,
+                                set_round_digits: 2,
+                                set_value: track!(self.changed(PropellerModel::power_negative()), *self.get_power_negative() as f64),
+                                connect_value_changed(key, sender) => move |scale| {
+                                    send!(sender, SlaveParameterTunerMsg::SetPropellerPowerNegative(key, scale.value()));
                                 }
                             }
                         },
                         add_row = &ActionRow {
                             set_title: "死区上限",
                             add_suffix = &SpinButton::with_range(-128.0, 127.0, 1.0) {
-                                set_value: track!(self.changed(PropellerModel::upper()), *self.get_upper() as f64),
+                                set_value: track!(self.changed(PropellerModel::deadzone_upper()), *self.get_deadzone_upper() as f64),
                                 set_digits: 0,
                                 set_valign: Align::Center,
                                 connect_value_changed(key, sender) => move |button| {
@@ -271,7 +281,7 @@ impl FactoryPrototype for PropellerModel {
                             set_child = Some(&Scale::with_range(Orientation::Horizontal, -128.0, 127.0, 1.0)) {
                                 set_width_request: CARD_MIN_WIDTH,
                                 set_round_digits: 0,
-                                set_value: track!(self.changed(PropellerModel::upper()), *self.get_upper() as f64),
+                                set_value: track!(self.changed(PropellerModel::deadzone_upper()), *self.get_deadzone_upper() as f64),
                                 connect_value_changed(key, sender) => move |scale| {
                                     send!(sender, SlaveParameterTunerMsg::SetPropellerUpperDeadzone(key, scale.value() as i8));
                                 }
@@ -280,7 +290,7 @@ impl FactoryPrototype for PropellerModel {
                         add_row = &ActionRow {
                             set_title: "死区下限",
                             add_suffix = &SpinButton::with_range(-128.0, 127.0, 1.0) {
-                                set_value: track!(self.changed(PropellerModel::lower()), *self.get_lower() as f64),
+                                set_value: track!(self.changed(PropellerModel::deadzone_lower()), *self.get_deadzone_lower() as f64),
                                 set_digits: 0,
                                 set_valign: Align::Center,
                                 connect_value_changed(key, sender) => move |button| {
@@ -292,7 +302,7 @@ impl FactoryPrototype for PropellerModel {
                             set_child = Some(&Scale::with_range(Orientation::Horizontal, -128.0, 127.0, 1.0)) {
                                 set_width_request: CARD_MIN_WIDTH,
                                 set_round_digits: 0,
-                                set_value: track!(self.changed(PropellerModel::lower()), *self.get_lower() as f64),
+                                set_value: track!(self.changed(PropellerModel::deadzone_lower()), *self.get_deadzone_lower() as f64),
                                 connect_value_changed(key, sender) => move |scale| {
                                     send!(sender, SlaveParameterTunerMsg::SetPropellerLowerDeadzone(key, scale.value() as i8));
                                 }
@@ -778,8 +788,8 @@ impl MicroModel for SlaveParameterTunerModel {
             SlaveParameterTunerMsg::SetPropellerLowerDeadzone(index, value) => {
                 if let Some(propeller) = self.propellers.get_mut(index) {
                     propeller.reset();
-                    propeller.set_lower(value);
-                    propeller.set_upper(max(*propeller.get_upper(), value));
+                    propeller.set_deadzone_lower(value);
+                    propeller.set_deadzone_upper(max(*propeller.get_deadzone_upper(), value));
                 }               // 不使用 unsafe 似乎无法在结束可变借用生命周期的同时将其转换为不可变借用？
                 if let (Some(propeller), Some(msg_sender)) = (self.propellers.get(index), self.get_tcp_msg_sender()) {
                     msg_sender.try_send(SlaveParameterTunerTcpMsg::PreviewPropeller(propeller.get_key().clone(), value)).unwrap_or(());
@@ -788,17 +798,23 @@ impl MicroModel for SlaveParameterTunerModel {
             SlaveParameterTunerMsg::SetPropellerUpperDeadzone(index, value) => {
                 if let Some(propeller) = self.propellers.get_mut(index) {
                     propeller.reset();
-                    propeller.set_upper(value);
-                    propeller.set_lower(min(*propeller.get_lower(), value));
+                    propeller.set_deadzone_upper(value);
+                    propeller.set_deadzone_lower(min(*propeller.get_deadzone_lower(), value));
                 }
                 if let (Some(propeller), Some(msg_sender)) = (self.propellers.get(index), self.get_tcp_msg_sender()) {
                     msg_sender.try_send(SlaveParameterTunerTcpMsg::PreviewPropeller(propeller.get_key().clone(), value)).unwrap_or(());
                 }
             },
-            SlaveParameterTunerMsg::SetPropellerPower(index, value) => {
+            SlaveParameterTunerMsg::SetPropellerPowerPositive(index, value) => {
                 if let Some(propeller) = self.propellers.get_mut(index) {
                     propeller.reset();
-                    propeller.set_actual_power(value);
+                    propeller.set_power_positive(value);
+                }
+            },
+            SlaveParameterTunerMsg::SetPropellerPowerNegative(index, value) => {
+                if let Some(propeller) = self.propellers.get_mut(index) {
+                    propeller.reset();
+                    propeller.set_power_negative(value);
                 }
             },
             SlaveParameterTunerMsg::SetPropellerReversed(index, reversed) => {
@@ -890,9 +906,10 @@ impl MicroModel for SlaveParameterTunerModel {
                 for index in 0..self.propellers.len() {
                     let propeller_model = self.propellers.get_mut(index).unwrap();
                     if let Some(propeller) = propellers.get(propeller_model.get_key()) {
-                        propeller_model.set_lower(propeller.lower.min(propeller.upper));
-                        propeller_model.set_upper(propeller.upper.max(propeller.lower));
-                        propeller_model.set_power(propeller.power);
+                        propeller_model.set_deadzone_lower(propeller.deadzone_lower.min(propeller.deadzone_upper));
+                        propeller_model.set_deadzone_upper(propeller.deadzone_upper.max(propeller.deadzone_lower));
+                        propeller_model.set_power_positive(propeller.power_positive);
+                        propeller_model.set_power_negative(propeller.power_negative);
                         propeller_model.set_enabled(propeller.enabled);
                     }
                 }

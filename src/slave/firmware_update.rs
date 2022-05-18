@@ -110,7 +110,7 @@ impl MicroModel for SlaveFirmwareUpdaterModel {
                                 let packet = SlaveFirmwareUpdatePacket {
                                     firmware_update: SlaveFirmwarePacket {
                                         size: bytes.len(),
-                                        compression: String::from("gzip"),
+                                        compression: String::from("none"),
                                         md5: md5_string,
                                     }
                                 };

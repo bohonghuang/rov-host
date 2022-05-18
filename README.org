@@ -92,19 +92,19 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   }
 #+END_SRC
 当前有效的发送命令如下：
-| 命令                        | 描述                    |
-|-----------------------------+-------------------------|
-| ~x~                           | 控制机器人左右平移      |
-| ~y~                           | 控制机器人前进或后退    |
-| ~z~                           | 控制机器人的上浮或下沉  |
-| ~set_debug_mode_enabled~      | 启用/禁用下位机[[调试模式][调试模式]] |
-| ~set_propeller_values~        | [[设置推进器输出][设置推进器输出]]          |
-| ~set_propeller_parameters~    | [[设置参数][设置推进器参数]]          |
-| ~set_control_loop_parameters~ | [[设置参数][设置控制环参数]]          |
-| ~set_pwm_freq_calibration~    | 设置 PWM 频率           |
-| ~save_parameters~             | 保存参数                |
-| ~load_parameters~             | 请求读取参数            |
-| ~firmware_update~             | 进行固件更新            |
+| 命令                               | 描述                    |
+|------------------------------------+-------------------------|
+| ~x~                                  | 控制机器人左右平移      |
+| ~y~                                  | 控制机器人前进或后退    |
+| ~z~                                  | 控制机器人的上浮或下沉  |
+| ~set_debug_mode_enabled~             | 启用/禁用下位机[[调试模式][调试模式]] |
+| ~set_propeller_values~               | [[设置推进器输出][设置推进器输出]]          |
+| ~set_propeller_parameters~           | [[设置参数][设置推进器参数]]          |
+| ~set_control_loop_parameters~        | [[设置参数][设置控制环参数]]          |
+| ~set_propeller_pwm_freq_calibration~ | 设置 PWM 频率           |
+| ~save_parameters~                    | 保存参数                |
+| ~load_parameters~                    | 请求读取参数            |
+| ~firmware_update~                    | 进行固件更新            |
 当前有效的接收命令如下：
 | 命令                        | 描述           |
 |-----------------------------+----------------|
@@ -120,6 +120,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       "y"                : -0.5,  // 前进后退
       "z"                : 0.8,   // 上浮下沉
       "rot"              : 0.1,   // 左右旋转
+      "catch"            : 0.0,   // 机械臂
       "depth_locked"     : false, // 深度锁定
       "direction_locked" : true   // 方向锁定
   }
@@ -142,7 +143,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           "back_right": {              // 推进器名称
               "deadzone_upper" : 8,    // 死区上限
               "deadzone_lower" : -12,  // 死区下限
-              "power"          : 0.75, // 动力百分比 
+              "power_positive" : 0.75, // 正向动力百分比
+              "power_negative" : 0.75, // 反向动力百分比
+              "reversed"       : false,// 是否反转
               "enabled"        : true  // 启用/禁用推进器
           }
           // ...
@@ -155,7 +158,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           }
           // ...
       },
-      "set_pwm_freq_calibration": 0.01
+      "set_propeller_pwm_freq_calibration": 0.01
   }
 #+END_SRC
 *** 读取/保存参数
