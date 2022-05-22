@@ -285,11 +285,12 @@ impl MicroWidgets<SlaveConfigModel> for SlaveConfigWidgets {
                                 add_row = &ActionRow {
                                     set_title: "接收缓冲区延迟",
                                     set_subtitle: "可以增加接收缓冲区延迟，牺牲视频的实时性来换取流畅度的提升",
-                                    add_suffix = &SpinButton::with_range(0.0, 60000.0, 1.0) {
+                                    add_suffix = &SpinButton::with_range(0.0, 60000.0, 50.0) {
                                         set_value: track!(model.changed(SlaveConfigModel::video_latency()), model.video_latency as f64),
                                         set_digits: 0,
                                         set_valign: Align::Center,
-                                        connect_changed(sender) => move |button| {
+                                        set_can_focus: false,
+                                        connect_value_changed(sender) => move |button| {
                                             send!(sender, SlaveConfigMsg::SetVideoLatency(button.value() as u32));
                                         }
                                     },

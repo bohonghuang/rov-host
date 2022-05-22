@@ -92,6 +92,7 @@ impl VideoSource {
                 elements.push(udpsrc);
                 if latency > 0 {
                     let rtpjitterbuffer = gst::ElementFactory::make("rtpjitterbuffer", None).map_err(|_| "Missing element: rtpjitterbuffer")?;
+                    rtpjitterbuffer.set_property("latency", latency);
                     elements.push(rtpjitterbuffer);
                 }
             },

@@ -193,7 +193,8 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                             set_value: track!(model.changed(PreferencesModel::initial_slave_num()), model.initial_slave_num as f64),
                             set_digits: 0,
                             set_valign: Align::Center,
-                            connect_changed(sender) => move |button| {
+                            set_can_focus: false,
+                            connect_value_changed(sender) => move |button| {
                                 send!(sender, PreferencesMsg::SetInitialSlaveNum(button.value() as u8));
                             }
                         }
@@ -248,7 +249,8 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                             set_value: track!(model.changed(PreferencesModel::default_input_sending_rate()), model.default_input_sending_rate as f64),
                             set_digits: 0,
                             set_valign: Align::Center,
-                            connect_changed(sender) => move |button| {
+                            set_can_focus: false,
+                            connect_value_changed(sender) => move |button| {
                                 send!(sender, PreferencesMsg::SetInputSendingRate(button.value() as u16));
                             }
                         },
@@ -322,11 +324,12 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                         add_row = &ActionRow {
                             set_title: "默认接收缓冲区延迟",
                             set_subtitle: "若接收的视频流出现卡顿、花屏等现象，可以增加接收缓冲区延迟，牺牲视频的实时性来换取流畅度的提升",
-                            add_suffix = &SpinButton::with_range(0.0, 60000.0, 1.0) {
+                            add_suffix = &SpinButton::with_range(0.0, 60000.0, 50.0) {
                                 set_value: track!(model.changed(PreferencesModel::default_video_latency()), model.default_video_latency as f64),
                                 set_digits: 0,
                                 set_valign: Align::Center,
-                                connect_changed(sender) => move |button| {
+                                set_can_focus: false,
+                                connect_value_changed(sender) => move |button| {
                                     send!(sender, PreferencesMsg::SetDefaultVideoLatency(button.value() as u32));
                                 }
                             },
@@ -387,7 +390,8 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                             set_value: track!(model.changed(PreferencesModel::pipeline_timeout()), model.pipeline_timeout.as_secs() as f64),
                             set_digits: 0,
                             set_valign: Align::Center,
-                            connect_changed(sender) => move |button| {
+                            set_can_focus: false,
+                            connect_value_changed(sender) => move |button| {
                                 send!(sender, PreferencesMsg::SetPipelineTimeout(Duration::from_secs(button.value() as u64)));
                             }
                         },
@@ -408,8 +412,8 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                         }
                     },
                     add = &ComboRow {
-                        set_title: "保存格式",
-                        set_subtitle: "截图保存的格式",
+                        set_title: "图片保存格式",
+                        set_subtitle: "截图保存的图片格式",
                         set_model: Some(&{
                             let model = StringList::new(&[]);
                             for value in ImageFormat::iter() {
@@ -501,7 +505,8 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                             set_value: track!(model.changed(PreferencesModel::default_param_tuner_graph_view_point_num_limit()), model.default_param_tuner_graph_view_point_num_limit as f64),
                             set_digits: 0,
                             set_valign: Align::Center,
-                            connect_changed(sender) => move |button| {
+                            set_can_focus: false,
+                            connect_value_changed(sender) => move |button| {
                                 send!(sender, PreferencesMsg::SetDefaultParameterTunerGraphViewPointNumberLimit(button.value() as u16));
                             },
                         },
