@@ -159,9 +159,16 @@ impl MicroModel for SlaveVideoModel {
                                 sender.send(SlaveVideoMsg::SetPixbuf(Some(mat.as_pixbuf()))).unwrap();
                                 Continue(true)
                             });
-                            pipeline.set_state(gst::State::Playing).unwrap();
-                            self.set_pipeline(Some(pipeline));
-                            send!(parent_sender, SlaveMsg::PollingChanged(true));
+                            match pipeline.set_state(gst::State::Playing) {
+                                Ok(_) => {
+                                    self.set_pipeline(Some(pipeline));
+                                    send!(parent_sender, SlaveMsg::PollingChanged(true));
+                                },
+                                Err(_) => {
+                                    send!(parent_sender, SlaveMsg::ErrorMessage(String::from("无法启动管道，这可能是由于管道使用的资源不存在或被占用导致的，请检查相关资源是否可用。")));
+                                    send!(parent_sender, SlaveMsg::PollingChanged(false));
+                                },
+                            }
                         },
                         Err(msg) => {
                             send!(parent_sender, SlaveMsg::ErrorMessage(String::from(msg)));
