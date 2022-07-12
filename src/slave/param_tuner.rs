@@ -645,6 +645,7 @@ async fn parameter_tuner_handler(mut tcp_stream: TcpStream,
     let receive_task = task::spawn(clone!(@strong tcp_stream, @strong model_sender, @strong tcp_sender => async move {
         let mut tcp_stream = tcp_stream.clone();
         let mut buf = [0u8; 1024];
+        tcp_sender.try_send(SlaveParameterTunerTcpMsg::RequestParameters).unwrap_or(());
         loop {
             buf.fill(0);
             if let Err(err) = tcp_stream.read(&mut buf).await {
@@ -874,9 +875,8 @@ impl MicroModel for SlaveParameterTunerModel {
             SlaveParameterTunerMsg::StartDebug(tcp_stream) => {
                 let (tcp_sender, tcp_receiver) = async_std::channel::bounded::<SlaveParameterTunerTcpMsg>(128);
                 self.tcp_msg_sender = Some(tcp_sender.clone());
-                tcp_sender.try_send(SlaveParameterTunerTcpMsg::SetDebugModeEnabled(true)).unwrap_or(());
-                tcp_sender.try_send(SlaveParameterTunerTcpMsg::RequestParameters).unwrap_or(());
                 let sender = sender.clone();
+                tcp_sender.try_send(SlaveParameterTunerTcpMsg::SetDebugModeEnabled(true)).unwrap_or(());
                 let handle = task::spawn(parameter_tuner_handler(tcp_stream, tcp_sender, tcp_receiver, sender));
                 send!(parent_sender, SlaveMsg::TcpMessage(SlaveTcpMsg::Block(handle)));
             },

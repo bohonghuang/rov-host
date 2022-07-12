@@ -610,6 +610,8 @@ async fn tcp_main_handler(input_rate: u16,
                         Err(err) => eprintln!("无法识别来自于下位机的 JSON 数据包（{}）：“{}”", err.to_string(), json_string),
                     }
                 }
+            } else {
+                task::sleep(Duration::from_millis(100)).await;
             }
         }
     }));
@@ -894,8 +896,10 @@ impl MicroModel for SlaveModel {
             },
             SlaveMsg::InformationsReceived(info_map) => {
                 let infos = self.get_mut_infos();
+                let mut sorted_infos = info_map.into_iter().collect::<Vec<_>>();
+                sorted_infos.sort();
                 infos.clear();
-                for (key, value) in info_map.into_iter() {
+                for (key, value) in sorted_infos.into_iter() {
                     infos.push(SlaveInfoModel { key, value, ..Default::default() });
                 }
             },
