@@ -16,7 +16,7 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::{Arc, Mutex}, fmt::Debug};
+use std::{cell::RefCell, path::{PathBuf, Path}, rc::Rc, sync::{Arc, Mutex}, fmt::Debug};
 
 use glib::{MainContext, Sender, clone};
 use gst::{Pipeline, prelude::*};
@@ -43,13 +43,14 @@ pub struct SlaveVideoModel {
     pub config: Arc<Mutex<SlaveConfigModel>>,
     pub record_handle: Option<((gst::Element, gst::Pad), Vec<gst::Element>)>,
     #[derivative(Default(value="Rc::new(RefCell::new(PreferencesModel::load_or_default()))"))]
-    pub preferences: Rc<RefCell<PreferencesModel>>, 
+    pub preferences: Rc<RefCell<PreferencesModel>>,
+    pub id: u8,
 }
 
 impl SlaveVideoModel {
-    pub fn new(preferences: Rc<RefCell<PreferencesModel>>, config: Arc<Mutex<SlaveConfigModel>>) -> Self {
+    pub fn new(preferences: Rc<RefCell<PreferencesModel>>, config: Arc<Mutex<SlaveConfigModel>>, id: u8) -> Self {
         SlaveVideoModel {
-            preferences, config,
+            preferences, config, id,
             ..Default::default()
         }
     }
@@ -137,6 +138,12 @@ impl MicroModel for SlaveVideoModel {
                 assert!(self.pipeline == None);
                 let config = self.get_config().lock().unwrap();
                 let video_url = config.get_video_url();
+                let id = self.id;
+                let socket_path_string = format!("/tmp/stream-{}", id);
+                let socket_path = Path::new(&socket_path_string);
+                if socket_path.exists() {
+                    std::fs::remove_file(socket_path).unwrap_or_default();
+                }
                 if let Some(video_source) = VideoSource::from_url(video_url) {
                     let video_decoder = config.get_video_decoder().clone();
                     let colorspace_conversion = config.get_colorspace_conversion().clone();
@@ -159,12 +166,14 @@ impl MicroModel for SlaveVideoModel {
                                 sender.send(SlaveVideoMsg::SetPixbuf(Some(mat.as_pixbuf()))).unwrap();
                                 Continue(true)
                             });
+                            super::video::add_shm(&pipeline, &socket_path_string).unwrap();
                             match pipeline.set_state(gst::State::Playing) {
                                 Ok(_) => {
                                     self.set_pipeline(Some(pipeline));
                                     send!(parent_sender, SlaveMsg::PollingChanged(true));
                                 },
-                                Err(_) => {
+                                Err(err) => {
+                                    dbg!(err.to_string());
                                     send!(parent_sender, SlaveMsg::ErrorMessage(String::from("无法启动管道，这可能是由于管道使用的资源不存在或被占用导致的，请检查相关资源是否可用。")));
                                     send!(parent_sender, SlaveMsg::PollingChanged(false));
                                 },

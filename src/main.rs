@@ -62,9 +62,9 @@ impl Widgets<AboutModel, AppModel> for AboutWidgets {
             },
             set_website: Some("https://github.com/BohongHuang/rov-host"),
             set_authors: &["黄博宏 https://bohonghuang.github.io"],
-            set_program_name: Some("水下机器人上位机"),
-            set_copyright: Some("© 2021-2022 集美大学水下智能创新实验室"),
-            set_comments: Some("跨平台的水下机器人上位机程序"),
+            set_program_name: Some("智能充电监控系统"),
+            set_copyright: Some("© 2022 ESDC"),
+            set_comments: Some("智能、多通道的火灾识别、报警、充电电源控制系统"),
             set_logo_icon_name: Some("input-gaming"),
             set_version: Some(env!("CARGO_PKG_VERSION")),
             set_license_type: License::Gpl30,
@@ -128,7 +128,7 @@ new_stateless_action!(AboutDialogAction, AppActionGroup, "about");
 impl Widgets<AppModel, ()> for AppWidgets {
     view! {
         app_window = ApplicationWindow::default() {
-            set_title: Some("水下机器人上位机"),
+            set_title: Some("智能充电监控系统"),
             set_default_width: 1280,
             set_default_height: 720,
             set_icon_name: Some("input-gaming"),
@@ -307,7 +307,7 @@ impl AppUpdate for AppModel {
                 slave_config.set_slave_url(slave_url);
                 slave_config.set_video_url(video_url);
                 slave_config.set_keep_video_display_ratio(*self.get_preferences().borrow().get_default_keep_video_display_ratio());
-                let slave = SlaveModel::new(slave_config, self.get_preferences().clone(), &slave_event_sender, input_event_sender);
+                let slave = SlaveModel::new(slave_config, self.get_preferences().clone(), &slave_event_sender, input_event_sender, index);
                 let component = MyComponent::new(slave, (sender.clone(), app_window));
                 let component_sender = component.sender().clone();
                 input_event_receiver.attach(None,  clone!(@strong component_sender => move |event| {

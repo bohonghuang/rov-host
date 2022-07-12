@@ -190,23 +190,6 @@ impl MicroWidgets<SlaveConfigModel> for SlaveConfigWidgets {
                             },
                         },
                         append = &PreferencesGroup {
-                            set_title: "控制",
-                            set_description: Some("调整机位控制选项"),
-                            add = &ActionRow {
-                                set_title: "交换 X/Y 轴",
-                                set_subtitle: "若下位机规定的 X/Y 轴与上位机不一致，可以使用此选项进行交换",
-                                add_suffix: swap_xy_switch = &Switch {
-                                    set_active: track!(model.changed(SlaveConfigModel::swap_xy()), *model.get_swap_xy()),
-                                    set_valign: Align::Center,
-                                    connect_state_set(sender) => move |_switch, state| {
-                                        send!(sender, SlaveConfigMsg::SetSwapXY(state));
-                                        Inhibit(false)
-                                    }
-                                },
-                                set_activatable_widget: Some(&swap_xy_switch),
-                            },
-                        },
-                        append = &PreferencesGroup {
                             set_title: "画面",
                             set_description: Some("上位机端对画面进行的处理选项"),
                             

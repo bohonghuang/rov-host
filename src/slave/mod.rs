@@ -148,10 +148,10 @@ impl SlaveStatusClass {
 const JOYSTICK_DISPLAY_THRESHOLD: i16 = 500;
 
 impl SlaveModel {
-    pub fn new(config: SlaveConfigModel, preferences: Rc<RefCell<PreferencesModel>>, component_sender: &Sender<SlaveMsg>, input_event_sender: Sender<InputSourceEvent>) -> Self {
+    pub fn new(config: SlaveConfigModel, preferences: Rc<RefCell<PreferencesModel>>, component_sender: &Sender<SlaveMsg>, input_event_sender: Sender<InputSourceEvent>, id: u8) -> Self {
         Self {
             config: MyComponent::new(config.clone(), component_sender.clone()),
-            video: MyComponent::new(SlaveVideoModel::new(preferences.clone(), Arc::new(Mutex::new(config))), component_sender.clone()),
+            video: MyComponent::new(SlaveVideoModel::new(preferences.clone(), Arc::new(Mutex::new(config)), id), component_sender.clone()),
             preferences,
             input_event_sender,
             status: Arc::new(Mutex::new(HashMap::new())),
@@ -273,6 +273,7 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                             set_icon_name: "input-gaming-symbolic",
                             set_css_classes: &["circular"],
                             set_tooltip_text: Some("切换当前机位使用的输入设备"),
+                            set_visible: false,
                             set_popover = Some(&Popover) {
                                 set_child = Some(&GtkBox) {
                                     set_spacing: 5,
@@ -305,23 +306,6 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                         set_halign: Align::End,
                         set_spacing: 5,
                         set_margin_end: 5,
-                        append = &GtkButton {
-                            set_icon_name: "software-update-available-symbolic",
-                            set_css_classes: &["circular"],
-                            set_tooltip_text: Some("固件更新"),
-                            connect_clicked(sender) => move |_button| {
-                                send!(sender, SlaveMsg::OpenFirmwareUpater);
-                            },
-                        },
-                        append = &GtkButton {
-                            set_icon_name: "preferences-other-symbolic",
-                            set_css_classes: &["circular"],
-                            set_tooltip_text: Some("参数调校"),
-                            connect_clicked(sender) => move |_button| {
-                                send!(sender, SlaveMsg::OpenParameterTuner);
-                            },
-                        },
-                        append = &Separator {},
                         append = &ToggleButton {
                             set_icon_name: "emblem-system-symbolic",
                             set_css_classes: &["circular"],
@@ -356,7 +340,8 @@ impl MicroWidgets<SlaveModel> for SlaveWidgets {
                             set_valign: Align::Start,
                             set_halign: Align::End,
                             set_hexpand: true,
-                            set_margin_all: 20, 
+                            set_margin_all: 20,
+                            set_visible: false,
                             append = &Frame {
                                 add_css_class: "card",
                                 set_child = Some(&GtkBox) {
@@ -992,8 +977,8 @@ impl FactoryPrototype for MyComponent<SlaveModel> {
         index: &usize,
     ) -> GridPosition {
         let index = *index as i32;
-        let row = index / 3;
-        let column = index % 3;
+        let row = index / 2;
+        let column = index % 2;
         GridPosition {
             column,
             row,

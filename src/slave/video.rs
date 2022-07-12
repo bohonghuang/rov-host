@@ -61,7 +61,7 @@ impl ImageFormat {
 }
 
 pub enum VideoSource {
-    RTP(Url), UDP(Url), RTSP(Url)
+    RTP(Url), UDP(Url), RTSP(Url), SharedMemory(Url), 
 }
 
 impl VideoSource {
@@ -70,6 +70,7 @@ impl VideoSource {
             "rtp" => Some(Self::RTP(url.clone())),
             "udp" => Some(Self::UDP(url.clone())),
             "rtsp" => Some(Self::RTSP(url.clone())),
+            "shm" => Some(Self::SharedMemory(url.clone())),
             _ => None
         }
     }
@@ -105,6 +106,21 @@ impl VideoSource {
                 }
                 rtspsrc.set_property("latency", latency);
                 elements.push(rtspsrc);
+            },
+            VideoSource::SharedMemory(url) => {
+                let shmsrc = gst::ElementFactory::make("shmsrc", Some("source")).map_err(|_| "Missing element: shmsrc")?;
+                shmsrc.set_property("socket-path", url.path());
+                elements.push(shmsrc);
+                let queue = gst::ElementFactory::make("queue", None).map_err(|_| "Missing element: queue")?;
+                queue.set_property_from_value("leaky", &EnumClass::new(queue.property_type("leaky").unwrap()).unwrap().to_value(2).unwrap());
+                if let Some(query) = url.query() {
+                    dbg!(&url.path());
+                    dbg!(&query);
+                    let capsfilter = gst::ElementFactory::make("capsfilter", None).map_err(|_| "Missing element: capsfilter")?;
+                    let caps = gst::Caps::from_str(query).map_err(|_| "Error when parsing caps string")?;
+                    capsfilter.set_property("caps", caps);
+                    elements.push(capsfilter);
+                }
             },
         }
         match self {
@@ -369,7 +385,7 @@ pub fn create_decodebin_pipeline(source: VideoSource, appsink_queue_leaky_enable
     let tee_decoded = gst::ElementFactory::make("tee", Some("tee_decoded")).map_err(|_| "Missing element: tee")?;
     let queue_to_app = gst::ElementFactory::make("queue", None).map_err(|_| "Missing element: queue")?;
     let videoconvert = gst::ElementFactory::make("videoconvert", None).map_err(|_| "Missing element: videoconvert")?;
-    pipeline.add_many(&[&uridecodebin, &appsink, &tee_decoded, &queue_to_app, &videoconvert]).map_err(|_| "Cannot create pipeline")?;
+    pipeline.add_many(&[&appsink, &tee_decoded, &queue_to_app, &videoconvert]).map_err(|_| "Cannot create pipeline")?;
     if appsink_queue_leaky_enabled {
         queue_to_app.set_property_from_value("leaky", &EnumClass::new(queue_to_app.property_type("leaky").unwrap()).unwrap().to_value(2).unwrap());
     }
@@ -377,35 +393,52 @@ pub fn create_decodebin_pipeline(source: VideoSource, appsink_queue_leaky_enable
     videoconvert.link(&appsink).map_err(|_| "Cannot link videoconvert to the appsink")?;
     queue_to_app.link(&videoconvert).map_err(|_| "Cannot link appsink queue to the videoconvert")?;
     tee_decoded.request_pad_simple("src_%u").unwrap().link(&queue_to_app.static_pad("sink").unwrap()).map_err(|_| "Cannot link tee to appsink queue")?;
-    let url = match &source {
-        VideoSource::RTP(url) | VideoSource::UDP(url) | VideoSource::RTSP(url) => url,
-    };
-    uridecodebin.set_property("uri", url.to_string());
-    uridecodebin.connect("pad-added", true, move |args| {
-        if let [_element, pad] = args {
-            let pad = pad.get::<Pad>().unwrap();
-            let media = pad.caps().unwrap().iter().flat_map(|x| x.iter()).find_map(|(key, value)| {
-                if key == "media" {
-                    Some(value.get::<String>().unwrap())
-                } else {
-                    None
-                }
-            });
-            let video_sink_pad = tee_decoded.static_pad("sink").unwrap();
-            match media.as_deref() {
-                Some("video") => {
-                    pad.link(&video_sink_pad).map_err(|_| "Cannot delay link uridecodebin to tee_decoded").unwrap();
-                },
-                Some("audio") => {},
-                Some(_) | None => {
-                    if pad.can_link(&video_sink_pad) {
-                        pad.link(&video_sink_pad).map_err(|_| "Cannot delay link uridecodebin to tee_decoded").unwrap();
-                    }
-                },
+
+    if let VideoSource::SharedMemory(_) = &source {
+        let src_elements = source.gst_src_elements(0, VideoDecoder::default())?;
+        pipeline.add_many(&src_elements.iter().collect::<Vec<_>>()).map_err(|_| "Cannot add src elements to pipeline")?;
+        for element in src_elements.windows(2) {
+            if let [a, b] = element {
+                a.link(b).map_err(|_| "Cannot link elements between colorspace conversion elements")?;
             }
         }
-        None
-    });
+        if let Some(element) = src_elements.last() {
+            element.link(&tee_decoded).map_err(|_| "Cannot link shmsrc to tee_decoded")?;
+        }
+        
+    } else {
+        pipeline.add(&uridecodebin).map_err(|_| "Cannot add uridecodebin to pipeline")?;
+        let url = match &source {
+            VideoSource::RTP(url) | VideoSource::UDP(url) | VideoSource::RTSP(url) => url,
+            VideoSource::SharedMemory(_) => unreachable!(),
+        };
+        uridecodebin.set_property("uri", url.to_string());
+        uridecodebin.connect("pad-added", true, move |args| {
+            if let [_element, pad] = args {
+                let pad = pad.get::<Pad>().unwrap();
+                let media = pad.caps().unwrap().iter().flat_map(|x| x.iter()).find_map(|(key, value)| {
+                    if key == "media" {
+                        Some(value.get::<String>().unwrap())
+                    } else {
+                        None
+                    }
+                });
+                let video_sink_pad = tee_decoded.static_pad("sink").unwrap();
+                match media.as_deref() {
+                    Some("video") => {
+                        pad.link(&video_sink_pad).map_err(|_| "Cannot delay link uridecodebin to tee_decoded").unwrap();
+                    },
+                    Some("audio") => {},
+                    Some(_) | None => {
+                        if pad.can_link(&video_sink_pad) {
+                            pad.link(&video_sink_pad).map_err(|_| "Cannot delay link uridecodebin to tee_decoded").unwrap();
+                        }
+                    },
+                }
+            }
+            None
+        });
+    }
     Ok(pipeline)
 }
 
@@ -531,6 +564,31 @@ fn apply_clahe(mut mat: Mat) -> Mat {
     }
     cv::core::merge(&channels, &mut mat).expect("Cannot merge result channels");
     mat
+}
+
+pub fn add_shm(pipeline: &Pipeline, socket_path: &str) -> Result<(), String> {
+    let shmsink = gst::ElementFactory::make("shmsink", None).map_err(|_| "Missing element: shmsink")?;
+    shmsink.set_property("socket-path", socket_path);
+    let socket_path_string = String::from(socket_path);
+    shmsink.static_pad("sink").unwrap().add_probe(PadProbeType::EVENT_BOTH, move |_pad, info| {
+        match &info.data {
+            Some(PadProbeData::Event(event)) => {
+                if let EventView::Caps(caps) = event.view() {
+                    let caps = caps.caps();
+                    println!("{} -> {}", socket_path_string, caps.to_string());
+                }
+            },
+            _ => (),
+        }
+        PadProbeReturn::Ok
+    });
+    let queue = gst::ElementFactory::make("queue", None).map_err(|_| "Missing element: queue")?;
+    queue.set_property_from_value("leaky", &EnumClass::new(queue.property_type("leaky").unwrap()).unwrap().to_value(2).unwrap());
+    let tee_decoded = pipeline.by_name("tee_decoded").ok_or("Cannot find tee_decoded")?;
+    pipeline.add_many(&[&shmsink, &queue]).map_err(|_| "Cannot add elements")?;
+    tee_decoded.request_pad_simple("src_%u").unwrap().link(&queue.static_pad("sink").unwrap()).map_err(|_| "Cannot link tee to queue")?;
+    queue.link(&shmsink).map_err(|_| "Cannot link queue to shmsink")?;
+    Ok(())
 }
 
 pub fn attach_pipeline_callback(pipeline: &Pipeline, sender: Sender<Mat>, config: Arc<Mutex<SlaveConfigModel>>) -> Result<(), String> {
