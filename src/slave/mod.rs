@@ -523,6 +523,7 @@ pub enum SlaveMsg {
     TcpMessage(SlaveTcpMsg),
     InformationsReceived(HashMap<String, String>),
     SetConfigPresented(bool),
+    SetDrawingBoundingBox(Option<(u16, u16, u16, u16)>),
 }
 
 pub enum SlaveTcpMsg {
@@ -823,7 +824,7 @@ impl MicroModel for SlaveModel {
                 send!(parent_sender, AppMsg::DestroySlave(self as *const Self));
             },
             SlaveMsg::ErrorMessage(msg) => {
-                error_message("错误", &msg, app_window.upgrade().as_ref());
+                error_message("注意", &msg, app_window.upgrade().as_ref());
             },
             SlaveMsg::TcpError(msg) => {
                 send!(sender, SlaveMsg::ShowToastMessage(format!("下位机通讯错误：{}", msg)));
@@ -894,6 +895,7 @@ impl MicroModel for SlaveModel {
                     }
                 }
             },
+            SlaveMsg::SetDrawingBoundingBox(value) => send!(self.video.sender(), SlaveVideoMsg::SetDrawingBoudingBox(value)),
         }
     }
 }

@@ -250,6 +250,26 @@ impl Widgets<AppModel, ()> for AppWidgets {
             send!(sender, AppMsg::DispatchInputEvent(event));
             Continue(true)
         }));
+        
+        async_std::task::spawn(clone!(@strong sender => async move {
+            let mut module = jsonrpsee_http_server::RpcModule::new(());
+            module.register_method("put_bounding_box", clone!(@strong sender => move |params, _| {
+                if let Ok(&[index, x, y, width, height]) = params.parse::<Vec<i32>>().as_ref().map(Vec::as_slice) {
+                    send!(sender, AppMsg::SetDrawingBoundingBox(index as usize, Some((x as u16, y as u16, width as u16, height as u16))));
+                }
+                Ok(())
+            })).unwrap();
+            module.register_method("remove_bounding_box", move |params, _| { 
+                if let Ok(&[index]) = params.parse::<Vec<i32>>().as_ref().map(Vec::as_slice) {
+                    send!(sender, AppMsg::SetDrawingBoundingBox(index as usize, None));
+                }
+                Ok(())
+            }).unwrap();
+            let server = jsonrpsee_http_server::HttpServerBuilder::new()
+                .build("127.0.0.1:8888").await.unwrap();
+            let server_handle = server.start(module).unwrap();
+            std::mem::forget(server_handle);
+        }));
     }
 }
 
@@ -264,8 +284,12 @@ pub enum AppMsg {
     SetFullscreened(bool),
     OpenAboutDialog,
     OpenPreferencesWindow,
-    StopInputSystem, 
+    StopInputSystem,
+    SetDrawingBoundingBox(usize, Option<(u16, u16, u16, u16)>)
 }
+
+unsafe impl Send for AppMsg {}
+unsafe impl Sync for AppMsg {}
 
 #[derive(relm4_macros::Components)]
 pub struct AppComponents {
@@ -388,6 +412,11 @@ impl AppUpdate for AppModel {
                 AppColorScheme::Light => ColorScheme::ForceLight,
                 AppColorScheme::Dark => ColorScheme::ForceDark,
             }),
+            AppMsg::SetDrawingBoundingBox(index, value) => {
+                if let Some(slave) = self.slaves.get(index) {
+                    send!(slave.component.sender(), SlaveMsg::SetDrawingBoundingBox(value));
+                }
+            },
         }
         true
     }
@@ -402,6 +431,7 @@ fn main() {
         ..Default::default()
     };
     model.input_system.run();
+    
     let relm = RelmApp::new(model);
     relm.run()
 }

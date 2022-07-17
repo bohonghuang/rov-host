@@ -24,7 +24,7 @@ use gst::{Element, Pad, PadProbeType, Pipeline, element_error, prelude::*, PadPr
 use gdk_pixbuf::{Colorspace, Pixbuf};
 
 use opencv as cv;
-use cv::{core::VecN, types::VectorOfMat};
+use cv::{core::{VecN, Scalar}, types::VectorOfMat};
 use cv::{prelude::*, Result, imgproc, core::Size};
 
 use serde::{Serialize, Deserialize};
@@ -553,6 +553,13 @@ fn correct_underwater_color(src: Mat) -> Mat {
     result
 }
 
+fn draw_bounding_box(mut mat: Mat, (x, y, width, height): (u16, u16, u16, u16)) -> Mat {
+    let rect = cv::core::Rect::new(x.into(), y.into(), width.into(), height.into());
+    let color = Scalar::new(0.0, 255.0, 0.0, 0.0);
+    cv::imgproc::rectangle(&mut mat, rect, color, 2, cv::imgproc::LineTypes::LINE_8 as i32, 0).unwrap();
+    mat
+}
+
 #[allow(dead_code)]
 fn apply_clahe(mut mat: Mat) -> Mat {
     let mut channels = VectorOfMat::new();
@@ -591,7 +598,7 @@ pub fn add_shm(pipeline: &Pipeline, socket_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn attach_pipeline_callback(pipeline: &Pipeline, sender: Sender<Mat>, config: Arc<Mutex<SlaveConfigModel>>) -> Result<(), String> {
+pub fn attach_pipeline_callback(pipeline: &Pipeline, sender: Sender<Mat>, config: Arc<Mutex<SlaveConfigModel>>, bounding_box: Arc<Mutex<Option<(u16, u16, u16, u16)>>>) -> Result<(), String> {
     let frame_size: Arc<Mutex<Option<(i32, i32)>>> = Arc::new(Mutex::new(None));
     let appsink = pipeline.by_name("display").unwrap().dynamic_cast::<gst_app::AppSink>().unwrap();
     appsink.set_callbacks(
@@ -647,6 +654,11 @@ pub fn attach_pipeline_callback(pipeline: &Pipeline, sender: Sender<Mat>, config
                     },
                     Err(_) => mat,
                 };
+                let mat = match *bounding_box.clone().lock().unwrap() {
+                    Some(bounding_box) => draw_bounding_box(mat, bounding_box),
+                    None => mat,
+                };
+                    
                 sender.send(mat).unwrap();
                 Ok(gst::FlowSuccess::Ok)
             }))

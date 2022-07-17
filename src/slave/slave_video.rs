@@ -45,6 +45,8 @@ pub struct SlaveVideoModel {
     #[derivative(Default(value="Rc::new(RefCell::new(PreferencesModel::load_or_default()))"))]
     pub preferences: Rc<RefCell<PreferencesModel>>,
     pub id: u8,
+    #[no_eq]
+    bounding_box: Arc<Mutex<Option<(u16, u16, u16, u16)>>>,
 }
 
 impl SlaveVideoModel {
@@ -72,6 +74,7 @@ pub enum SlaveVideoMsg {
     ConfigUpdated(SlaveConfigModel),
     SaveScreenshot(PathBuf),
     RequestFrame,
+    SetDrawingBoudingBox(Option<(u16, u16, u16, u16)>),
 }
 
 impl MicroModel for SlaveVideoModel {
@@ -161,7 +164,7 @@ impl MicroModel for SlaveVideoModel {
                         Ok(pipeline) => {
                             let sender = sender.clone();
                             let (mat_sender, mat_receiver) = MainContext::channel(glib::PRIORITY_DEFAULT);
-                            super::video::attach_pipeline_callback(&pipeline, mat_sender, self.get_config().clone()).unwrap();
+                            super::video::attach_pipeline_callback(&pipeline, mat_sender, self.get_config().clone(), self.bounding_box.clone()).unwrap();
                             mat_receiver.attach(None, move |mat| {
                                 sender.send(SlaveVideoMsg::SetPixbuf(Some(mat.as_pixbuf()))).unwrap();
                                 Continue(true)
@@ -251,6 +254,14 @@ impl MicroModel for SlaveVideoModel {
                 if let Some(pipeline) = &self.pipeline {
                     pipeline.by_name("display").unwrap().dynamic_cast::<gst_app::AppSink>() .unwrap().send_event(gst::event::CustomDownstream::new(gst::Structure::new("resend", &[])));
                 }
+            },
+            SlaveVideoMsg::SetDrawingBoudingBox(value) => {
+                let id = self.id;
+                let mut bounding_box = self.get_mut_bounding_box().lock().unwrap();
+                if bounding_box.is_none() && value.is_some() {
+                    send!(parent_sender, SlaveMsg::ErrorMessage(format!("机位 {} 监测到火灾，请及时处置！", id + 1)));
+                }
+                *bounding_box = value;
             },
         }
     }
