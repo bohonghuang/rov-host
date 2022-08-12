@@ -24,8 +24,9 @@ pub mod ui;
 pub mod async_glib;
 pub mod function;
 
-use std::{fs, cell::RefCell, net::Ipv4Addr, rc::Rc, ops::Deref, str::FromStr};
+use std::{fs, cell::RefCell, net::Ipv4Addr, rc::Rc, ops::Deref, str::FromStr, time::Duration, collections::HashMap};
 
+use async_std::net::TcpStream;
 use glib::{MainContext, clone, Sender, WeakRef, DateTime, PRIORITY_DEFAULT};
 use gtk::{AboutDialog, Align, Box as GtkBox, Grid, Image, Inhibit, Label, MenuButton, Orientation, Stack, prelude::*, Button, ToggleButton, Separator, License};
 use adw::{ApplicationWindow, CenteringPolicy, ColorScheme, StyleManager, HeaderBar, StatusPage, prelude::*};
@@ -251,17 +252,68 @@ impl Widgets<AppModel, ()> for AppWidgets {
             Continue(true)
         }));
         
-        async_std::task::spawn(clone!(@strong sender => async move {
+        let (pin_status_sender, pin_status_receiver) = async_std::channel::bounded::<(usize, bool)>(16);
+        const ESP_ADDR: &str = "192.168.50.119:80";
+        // const ESP_ADDR: &str = "127.0.0.1:8889";
+        async_std::task::spawn(async move {
+            let mut pin_status = [true; 8];
+            loop {
+                match TcpStream::connect(ESP_ADDR).await {
+                    Ok(mut tcp_stream) => {
+                        println!("ESP8266 连接成功！");
+                        loop {
+                            if let Ok((index, status)) = pin_status_receiver.recv().await {
+                                pin_status[index] = status;
+                                let mut pin_status_iter = pin_status.iter().rev();
+                                let mut byte = pin_status_iter.next().unwrap().clone() as u8;
+                                for &status in pin_status_iter {
+                                    byte <<= 1;
+                                    byte |= status as u8;
+                                }
+                                let bytes = [byte];
+                                if async_std::io::copy(&mut bytes.as_slice(), &mut tcp_stream).await.is_err() {
+                                    println!("ESP8266 通信错误，正在尝试重新连接……");
+                                    break;
+                                }
+                            }
+                        }
+                    },
+                    Err(err) => {
+                        println!("ESP8266 连接失败：{}，正在尝试重新连接……", err.to_string());
+                        async_std::task::sleep(Duration::from_secs(3)).await;
+                    }
+                }
+            }
+        });
+        
+        async_std::task::spawn(clone!(@strong sender, @strong pin_status_sender => async move {
             let mut module = jsonrpsee_http_server::RpcModule::new(());
-            module.register_method("put_bounding_box", clone!(@strong sender => move |params, _| {
+            let counters = std::sync::Arc::new(std::sync::Mutex::new(HashMap::<usize, i32>::new()));
+            module.register_method("put_bounding_box", clone!(@strong sender, @strong pin_status_sender, @strong counters => move |params, _| {
                 if let Ok(&[index, x, y, width, height]) = params.parse::<Vec<i32>>().as_ref().map(Vec::as_slice) {
                     send!(sender, AppMsg::SetDrawingBoundingBox(index as usize, Some((x as u16, y as u16, width as u16, height as u16))));
+                    let mut counters = counters.lock().unwrap();
+                    dbg!(*counters.entry(index as usize).or_default());
+                    if *counters.entry(index as usize).or_default() != 0 {
+                        send!(sender, AppMsg::ChargingError(index as usize));
+                        async_std::task::spawn(clone!(@strong pin_status_sender, @strong counters => async move {
+                            pin_status_sender.send((index as usize, false)).await.unwrap_or_default();
+                        }));
+                    };
+                    *counters.entry(index as usize).or_default() = 0;
                 }
                 Ok(())
             })).unwrap();
             module.register_method("remove_bounding_box", move |params, _| { 
                 if let Ok(&[index]) = params.parse::<Vec<i32>>().as_ref().map(Vec::as_slice) {
                     send!(sender, AppMsg::SetDrawingBoundingBox(index as usize, None));
+                    let mut counters = counters.lock().unwrap();
+                    *counters.entry(index as usize).or_default() += 1;
+                    if *counters.entry(index as usize).or_default() == 50 {
+                        async_std::task::spawn(clone!(@strong pin_status_sender, @strong counters => async move {
+                            pin_status_sender.send((index as usize, true)).await.unwrap_or_default();
+                        }));
+                    }
                 }
                 Ok(())
             }).unwrap();
@@ -285,7 +337,8 @@ pub enum AppMsg {
     OpenAboutDialog,
     OpenPreferencesWindow,
     StopInputSystem,
-    SetDrawingBoundingBox(usize, Option<(u16, u16, u16, u16)>)
+    SetDrawingBoundingBox(usize, Option<(u16, u16, u16, u16)>),
+    ChargingError(usize),
 }
 
 unsafe impl Send for AppMsg {}
@@ -415,6 +468,11 @@ impl AppUpdate for AppModel {
             AppMsg::SetDrawingBoundingBox(index, value) => {
                 if let Some(slave) = self.slaves.get(index) {
                     send!(slave.component.sender(), SlaveMsg::SetDrawingBoundingBox(value));
+                }
+            },
+            AppMsg::ChargingError(index) => {
+                if let Some(slave) = self.slaves.get(index) {
+                    send!(slave.component.sender(), SlaveMsg::ChargingError);
                 }
             },
         }

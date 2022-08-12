@@ -524,6 +524,7 @@ pub enum SlaveMsg {
     InformationsReceived(HashMap<String, String>),
     SetConfigPresented(bool),
     SetDrawingBoundingBox(Option<(u16, u16, u16, u16)>),
+    ChargingError,
 }
 
 pub enum SlaveTcpMsg {
@@ -896,6 +897,7 @@ impl MicroModel for SlaveModel {
                 }
             },
             SlaveMsg::SetDrawingBoundingBox(value) => send!(self.video.sender(), SlaveVideoMsg::SetDrawingBoudingBox(value)),
+            SlaveMsg::ChargingError => send!(self.video.sender(), SlaveVideoMsg::ChargingError),
         }
     }
 }

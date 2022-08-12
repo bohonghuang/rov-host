@@ -75,6 +75,7 @@ pub enum SlaveVideoMsg {
     SaveScreenshot(PathBuf),
     RequestFrame,
     SetDrawingBoudingBox(Option<(u16, u16, u16, u16)>),
+    ChargingError,
 }
 
 impl MicroModel for SlaveVideoModel {
@@ -256,12 +257,16 @@ impl MicroModel for SlaveVideoModel {
                 }
             },
             SlaveVideoMsg::SetDrawingBoudingBox(value) => {
-                let id = self.id;
+                // let id = self.id;
                 let mut bounding_box = self.get_mut_bounding_box().lock().unwrap();
-                if bounding_box.is_none() && value.is_some() {
-                    send!(parent_sender, SlaveMsg::ErrorMessage(format!("机位 {} 监测到火灾，请及时处置！", id + 1)));
-                }
+                // if bounding_box.is_none() && value.is_some() {
+                //     send!(parent_sender, SlaveMsg::ErrorMessage(format!("机位 {} 监测到火灾，请及时处置！", id + 1)));
+                // }
                 *bounding_box = value;
+            },
+            SlaveVideoMsg::ChargingError => {
+                let id = self.id;
+                send!(parent_sender, SlaveMsg::ErrorMessage(format!("机位 {} 监测到火灾，请及时处置！", id + 1)));
             },
         }
     }
