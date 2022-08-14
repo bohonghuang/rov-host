@@ -22,8 +22,8 @@ pub mod slave_config;
 pub mod slave_video;
 pub mod firmware_update;
 
-use std::{cell::RefCell, collections::{HashMap, VecDeque, HashSet}, rc::Rc, sync::{Arc, Mutex}, fmt::Debug, time::{Duration, SystemTime}, ops::Deref, io::Error as IOError};
-use async_std::{net::TcpStream, prelude::*, task::{JoinHandle, self}};
+use std::{cell::RefCell, collections::{HashMap, VecDeque, HashSet, BTreeMap}, rc::Rc, sync::{Arc, Mutex}, fmt::Debug, time::{Duration, SystemTime}, io::Error as IOError};
+use async_std::task::{JoinHandle, self};
 
 use glib::{PRIORITY_DEFAULT, Sender, WeakRef, DateTime, MainContext};
 use glib_macros::clone;
@@ -31,6 +31,9 @@ use gtk::{prelude::*, Align, Box as GtkBox, Button as GtkButton, CenterBox, Chec
 use adw::{ApplicationWindow, ToastOverlay, Toast, Flap, FlapFoldPolicy};
 use relm4::{WidgetPlus, factory::{FactoryPrototype, FactoryVec, positions::GridPosition}, send, MicroWidgets, MicroModel, MicroComponent};
 use relm4_macros::micro_widget;
+
+use jsonrpsee_http_client::{HttpClient, HttpClientBuilder};
+use jsonrpsee_core::{client::ClientT, rpc_params, Error as RpcError};
 
 use serde::{Serialize, Deserialize};
 use derivative::*;
@@ -40,6 +43,11 @@ use crate::preferences::PreferencesModel;
 use crate::ui::generic::error_message;
 use crate::AppMsg;
 use self::{param_tuner::SlaveParameterTunerModel, slave_config::{SlaveConfigModel, SlaveConfigMsg}, slave_video::{SlaveVideoModel, SlaveVideoMsg}, firmware_update::SlaveFirmwareUpdaterModel};
+
+
+pub type RpcClient = HttpClient;
+pub type RpcClientBuilder = HttpClientBuilder;
+pub type RpcParams = jsonrpsee_http_client::types::ParamsSer<'static>;
 
 #[tracker::track(pub)]
 #[derive(Debug, Derivative)]
@@ -73,8 +81,7 @@ pub struct SlaveModel {
     #[no_eq]
     pub tcp_msg_sender: Option<async_std::channel::Sender<SlaveTcpMsg>>,
     #[no_eq]
-    pub tcp_stream: Option<async_std::sync::Arc<TcpStream>>,
-    #[no_eq]
+    pub rpc_client: Option<async_std::sync::Arc<RpcClient>>,
     pub toast_messages: Rc<RefCell<VecDeque<String>>>,
     #[no_eq]
     #[derivative(Default(value="FactoryVec::new()"))]
@@ -533,7 +540,7 @@ pub enum SlaveMsg {
     DestroySlave,
     ErrorMessage(String),
     TcpError(String),
-    TcpConnectionChanged(Option<async_std::sync::Arc<TcpStream>>),
+    TcpConnectionChanged(Option<async_std::sync::Arc<RpcClient>>),
     ShowToastMessage(String),
     TcpMessage(SlaveTcpMsg),
     InformationsReceived(HashMap<String, String>),
@@ -541,83 +548,36 @@ pub enum SlaveMsg {
 }
 
 pub enum SlaveTcpMsg {
-    ConnectionLost(IOError),
+    ConnectionLost(RpcError),
     Disconnect,
-    SendString(String),
     ControlUpdated(ControlPacket),
     Block(JoinHandle<Result<(), IOError>>),
 }
 
 async fn tcp_main_handler(input_rate: u16,
-                          tcp_stream: Arc<TcpStream>,
+                          rpc_client: Arc<RpcClient>,
                           tcp_sender: async_std::channel::Sender<SlaveTcpMsg>,
                           tcp_receiver: async_std::channel::Receiver<SlaveTcpMsg>,
-                          slave_sender: Sender<SlaveMsg>) -> Result<(), IOError> {
+                          slave_sender: Sender<SlaveMsg>) -> Result<(), RpcError> {
     fn current_millis() -> u128 {
         SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis()
     }
-    send!(slave_sender, SlaveMsg::TcpConnectionChanged(Some(tcp_stream.clone())));
+    send!(slave_sender, SlaveMsg::TcpConnectionChanged(Some(rpc_client.clone())));
     
-    let mut tcp_stream = &*tcp_stream;
     let idle = async_std::sync::Arc::new(async_std::sync::Mutex::new(true));
     let last_action_timestamp = async_std::sync::Arc::new(async_std::sync::Mutex::new(current_millis()));
     let control_packet = async_std::sync::Arc::new(async_std::sync::Mutex::new(None as Option<ControlPacket>));
-    
-    const IDLE_TIME_MILLIS: u128 = 5000;
 
-    let connection_test_task = task::spawn(clone!(@strong idle, @strong tcp_sender, @strong tcp_stream, @strong last_action_timestamp => async move {
-        let mut tcp_stream = &tcp_stream;
-        tcp_stream.flush().await.unwrap();
+    let receive_task = task::spawn(clone!(@strong tcp_sender, @strong idle, @strong slave_sender, @strong rpc_client => async move {
         loop {
-            if tcp_sender.is_closed() {
-                return;
+            if let Ok(info) = rpc_client.request::<HashMap<String, String>>("get_info", None).await {
+                send!(slave_sender, SlaveMsg:: InformationsReceived(info));
             }
-            if *idle.lock().await {
-                if current_millis() - *last_action_timestamp.lock().await >= IDLE_TIME_MILLIS {
-                    if let Err(err) = tcp_stream.write_all("{ \"x\": 0.0, \"y\": 0.0, \"z\": 0.0, \"catch\": 0.0, \"rot\": 0.0 }".as_bytes()).await {
-                        tcp_sender.send(SlaveTcpMsg::ConnectionLost(err)).await.unwrap_or_default();
-                        break;
-                    }
-                }
-            }
-            task::sleep(Duration::from_millis(500)).await;
+            task::sleep(Duration::from_millis(1000)).await;
         }
-    }));
-
-    let receive_task = task::spawn(clone!(@strong tcp_sender, @strong idle, @strong slave_sender, @strong tcp_stream => async move {
-        let mut tcp_stream = tcp_stream.clone();
-        let mut buf = [0u8; 1024];
-        loop {
-            if *idle.lock().await {
-                buf.fill(0);
-                if let Err(err) = tcp_stream.read(&mut buf).await {
-                    tcp_sender.send(SlaveTcpMsg::ConnectionLost(err)).await.unwrap_or_default();
-                    break;
-                } else {
-                    let json_string = match std::str::from_utf8(buf.split(|x| x.eq(&0)).next().unwrap()) {
-                        Ok(string) => string,
-                        Err(_) => continue,
-                    };
-                    if json_string.is_empty() {
-                        tcp_sender.send(SlaveTcpMsg::ConnectionLost(IOError::new(std::io::ErrorKind::ConnectionAborted, "下位机主动断开连接（EOF）"))).await.unwrap_or_default();
-                        break;
-                    }
-                    let msg = serde_json::from_str::<SlaveInfoPacket>(&json_string);
-                    match msg {
-                        Ok(packet) => {
-                            send!(slave_sender, SlaveMsg::InformationsReceived(packet.info));
-                        },
-                        Err(err) => eprintln!("无法识别来自于下位机的 JSON 数据包（{}）：“{}”", err.to_string(), json_string),
-                    }
-                }
-            } else {
-                task::sleep(Duration::from_millis(100)).await;
-            }
-        }
-    }));
+    }));                        // 定时请求数据
     
-    let control_send_task = task::spawn(clone!(@strong idle, @strong tcp_sender, @strong tcp_stream, @strong control_packet => async move {
-        let mut tcp_stream = &tcp_stream;
+    let control_send_task = task::spawn(clone!(@strong idle, @strong tcp_sender, @strong rpc_client, @strong control_packet => async move {
         loop {
             if tcp_sender.is_closed() {
                 return;
@@ -625,7 +585,10 @@ async fn tcp_main_handler(input_rate: u16,
             if *idle.lock().await {
                 let mut control_mutex = control_packet.lock().await;
                 if let Some(control) = control_mutex.as_ref() {
-                    match tcp_stream.write_all(control.to_string().as_bytes()).await {
+                    match rpc_client.batch_request::<()>(vec![("move", Some(control.motion.to_rpc_params())),
+                                                              ("set_depth_locked", Some(control.depth_locked.to_rpc_params())),
+                                                              ("set_direction_locked", Some(control.depth_locked.to_rpc_params())),
+                                                              ("catch", Some(control.catch.to_rpc_params())),]).await {
                         Ok(_) => *control_mutex = None,
                         Err(err) => {
                             tcp_sender.send(SlaveTcpMsg::ConnectionLost(err)).await.unwrap_or_default();
@@ -643,27 +606,17 @@ async fn tcp_main_handler(input_rate: u16,
             Ok(msg) if *idle.lock().await => {
                 match msg {
                     SlaveTcpMsg::Disconnect => {
-                        if tcp_stream.shutdown(std::net::Shutdown::Both).is_ok() {
-                            connection_test_task.cancel().await;
-                            control_send_task.cancel().await;
-                            receive_task.cancel().await;
-                            send!(slave_sender, SlaveMsg::TcpConnectionChanged(None));
-                        }
-                        tcp_receiver.close();
+                        control_send_task.cancel().await;
+                        receive_task.cancel().await;
+                        send!(slave_sender, SlaveMsg::TcpConnectionChanged(None));
                         break;
                     },
                     SlaveTcpMsg::ConnectionLost(err) => {
-                        tcp_stream.shutdown(std::net::Shutdown::Both).unwrap_or_default();
-                        connection_test_task.cancel().await;
                         control_send_task.cancel().await;
                         receive_task.cancel().await;
                         send!(slave_sender, SlaveMsg::TcpError(err.to_string()));
                         tcp_receiver.close();
                         return Err(err);
-                    }
-                    SlaveTcpMsg::SendString(string) => {
-                        tcp_stream.write_all(string.as_bytes()).await?;
-                        *last_action_timestamp.lock().await = current_millis();
                     },
                     SlaveTcpMsg::ControlUpdated(control) => {
                         *control_packet.lock().await = Some(control);
@@ -709,21 +662,20 @@ impl MicroModel for SlaveModel {
                     },
                     Some(false) => { // 连接
                         let url = self.config.model().get_slave_url().clone();
-                        if let ("tcp", Some(host), Some(port)) = (url.scheme(), url.host_str().map(ToString::to_string), url.port()) {
-                            let (tcp_sender, tcp_receiver) = async_std::channel::bounded::<SlaveTcpMsg>(128);
-                            self.set_tcp_msg_sender(Some(tcp_sender.clone()));
-                            let sender = sender.clone();
-                            let control_sending_rate = *self.preferences.borrow().get_default_input_sending_rate();
-                            self.set_connected(None);
-                            self.config.send(SlaveConfigMsg::SetConnected(None)).unwrap();
-                            async_std::task::spawn(async move {
-                                match TcpStream::connect(format!("{}:{}", host, port)).await.map(|x| async_std::sync::Arc::new(x)) {
-                                    Ok(tcp_stream) => {
-                                        tcp_main_handler(control_sending_rate, tcp_stream.clone(), tcp_sender, tcp_receiver, sender.clone()).await.unwrap_or_default();
-                                    },
-                                    Err(err) => send!(sender, SlaveMsg::TcpError(err.to_string())),
-                                }
-                            });
+                        if let ("http", url_str) = (url.scheme(), url.as_str()) {
+                            if let Ok(rpc_client) = RpcClientBuilder::default().build(url_str) {
+                                let (tcp_sender, tcp_receiver) = async_std::channel::bounded::<SlaveTcpMsg>(128);
+                                self.set_tcp_msg_sender(Some(tcp_sender.clone()));
+                                let sender = sender.clone();
+                                let control_sending_rate = *self.preferences.borrow().get_default_input_sending_rate();
+                                self.set_connected(None);
+                                self.config.send(SlaveConfigMsg::SetConnected(None)).unwrap();
+                                async_std::task::spawn(async move {
+                                    tcp_main_handler(control_sending_rate, Arc::new(rpc_client), tcp_sender, tcp_receiver, sender.clone()).await.unwrap_or_default();
+                                });
+                            } else {
+                                error_message("错误", "无法创建 RPC 客户端。", app_window.upgrade().as_ref());
+                            }
                         } else {
                             error_message("错误", "连接 URL 有误，请检查并修改后重试 。", app_window.upgrade().as_ref());
                         }
@@ -791,7 +743,7 @@ impl MicroModel for SlaveModel {
                 if let Some(sender) = self.get_tcp_msg_sender() {
                     let mut control_packet = ControlPacket::from_status_map(&self.get_status().lock().unwrap());
                     if *self.config.model().get_swap_xy() {
-                        std::mem::swap(&mut control_packet.x, &mut control_packet.y);
+                        std::mem::swap(&mut control_packet.motion.x, &mut control_packet.motion.y);
                     }
                     match sender.try_send(SlaveTcpMsg::ControlUpdated(control_packet)) {
                         Ok(_) => (),
@@ -800,31 +752,31 @@ impl MicroModel for SlaveModel {
                 }
             },
             SlaveMsg::OpenFirmwareUpater => {
-                match self.get_tcp_stream() {
-                    Some(tcp_stream) => {
-                        let component = MicroComponent::new(SlaveFirmwareUpdaterModel::new(Deref::deref(tcp_stream).clone()), sender.clone());
-                        let window = component.root_widget();
-                        window.set_transient_for(app_window.upgrade().as_ref());
-                        window.set_visible(true);
-                    },
-                    None => {
-                        error_message("错误", "请确保下位机处于连接状态。", app_window.upgrade().as_ref());
-                    },
-                }
+                // match self.get_tcp_stream() {
+                //     Some(tcp_stream) => {
+                //         let component = MicroComponent::new(SlaveFirmwareUpdaterModel::new(Deref::deref(tcp_stream).clone()), sender.clone());
+                //         let window = component.root_widget();
+                //         window.set_transient_for(app_window.upgrade().as_ref());
+                //         window.set_visible(true);
+                //     },
+                //     None => {
+                //         error_message("错误", "请确保下位机处于连接状态。", app_window.upgrade().as_ref());
+                //     },
+                // }
             },
             SlaveMsg::OpenParameterTuner => {
-                match self.get_tcp_stream() {
-                    Some(tcp_stream) => {
-                        let component = MicroComponent::new(SlaveParameterTunerModel::new(*self.preferences.borrow().get_default_param_tuner_graph_view_point_num_limit()), sender.clone());
-                        let window = component.root_widget();
-                        window.set_transient_for(app_window.upgrade().as_ref());
-                        window.set_visible(true);
-                        send!(component.sender(), SlaveParameterTunerMsg::StartDebug(Deref::deref(tcp_stream).clone()));
-                    },
-                    None => {
-                        error_message("错误", "请确保下位机处于连接状态。", app_window.upgrade().as_ref());
-                    },
-                }
+                // match self.get_tcp_stream() {
+                //     Some(tcp_stream) => {
+                //         let component = MicroComponent::new(SlaveParameterTunerModel::new(*self.preferences.borrow().get_default_param_tuner_graph_view_point_num_limit()), sender.clone());
+                //         let window = component.root_widget();
+                //         window.set_transient_for(app_window.upgrade().as_ref());
+                //         window.set_visible(true);
+                //         send!(component.sender(), SlaveParameterTunerMsg::StartDebug(Deref::deref(tcp_stream).clone()));
+                //     },
+                //     None => {
+                //         error_message("错误", "请确保下位机处于连接状态。", app_window.upgrade().as_ref());
+                //     },
+                // }
             },
             SlaveMsg::DestroySlave => {
                 if let Some(polling) = self.get_polling() {
@@ -846,13 +798,13 @@ impl MicroModel for SlaveModel {
                 send!(sender, SlaveMsg::ShowToastMessage(format!("下位机通讯错误：{}", msg)));
                 send!(sender, SlaveMsg::TcpConnectionChanged(None));
             },
-            SlaveMsg::TcpConnectionChanged(tcp_stream) => {
-                self.set_connected(Some(tcp_stream.is_some()));
-                self.config.send(SlaveConfigMsg::SetConnected(Some(tcp_stream.is_some()))).unwrap();
-                if tcp_stream.is_none() {
+            SlaveMsg::TcpConnectionChanged(rpc_client) => {
+                self.set_connected(Some(rpc_client.is_some()));
+                self.config.send(SlaveConfigMsg::SetConnected(Some(rpc_client.is_some()))).unwrap();
+                if rpc_client.is_none() {
                     self.set_tcp_msg_sender(None);
                 }
-                self.set_tcp_stream(tcp_stream);
+                self.set_rpc_client(rpc_client);
             },
             SlaveMsg::ShowToastMessage(msg) => {
                 self.get_mut_toast_messages().borrow_mut().push_back(msg);
@@ -1020,11 +972,16 @@ impl FactoryPrototype for MyComponent<SlaveModel> {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct ControlPacket {
+pub struct MotionPacket {
     x: f32,
     y: f32,
     z: f32,
     rot: f32,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ControlPacket {
+    motion: MotionPacket,
     catch: f32,
     depth_locked: bool,
     direction_locked: bool,
@@ -1045,10 +1002,12 @@ impl ControlPacket {
             }
         }
         ControlPacket {
-            x                : map_value(status_map.get(&SlaveStatusClass::MotionX).unwrap_or(&0)),
-            y                : map_value(status_map.get(&SlaveStatusClass::MotionY).unwrap_or(&0)),
-            z                : map_value(status_map.get(&SlaveStatusClass::MotionZ).unwrap_or(&0)),
-            rot              : map_value(status_map.get(&SlaveStatusClass::MotionRotate).unwrap_or(&0)),
+            motion           : MotionPacket {
+                x                : map_value(status_map.get(&SlaveStatusClass::MotionX).unwrap_or(&0)),
+                y                : map_value(status_map.get(&SlaveStatusClass::MotionY).unwrap_or(&0)),
+                z                : map_value(status_map.get(&SlaveStatusClass::MotionZ).unwrap_or(&0)),
+                rot              : map_value(status_map.get(&SlaveStatusClass::MotionRotate).unwrap_or(&0)),
+            },
             catch            : (*status_map.get(&SlaveStatusClass::RoboticArmOpen).unwrap_or(&0) * 1 + *status_map.get(&SlaveStatusClass::RoboticArmClose).unwrap_or(&0) * -1) as f32,
             depth_locked     : status_map.get(&SlaveStatusClass::DepthLocked).map(|x| *x >= 1).unwrap_or(false),
             direction_locked : status_map.get(&SlaveStatusClass::DirectionLocked).map(|x| *x >= 1).unwrap_or(false),
@@ -1059,5 +1018,19 @@ impl ControlPacket {
 impl ToString for ControlPacket {
     fn to_string(&self) -> String {
         serde_json::to_string_pretty(self).unwrap()
+    }
+}
+
+trait AsRpcParams {
+    fn to_rpc_params(&self) -> RpcParams;
+}
+
+
+impl <T: Serialize> AsRpcParams for T {
+    fn to_rpc_params(&self) -> RpcParams {
+        match serde_json::to_value(self).unwrap() {
+            serde_json::Value::Object(map) => map.into_iter().map(|(key, value)| ((Box::leak(Box::new(key)) as &'static str), value)).collect::<BTreeMap<_, _>>().into(),
+            x => vec![x].into(),
+        }
     }
 }
