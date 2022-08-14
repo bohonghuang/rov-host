@@ -67,21 +67,21 @@ pub struct SlaveFirmwarePacket {
 }
 
 #[derive(Debug)]
-pub enum FirmwareUpdateError {
+pub enum SlaveFirmwareUpdateError {
     IOError(std::io::Error),
     RpcError(jsonrpsee_core::Error),
 }
 
-impl Display for FirmwareUpdateError {
+impl Display for SlaveFirmwareUpdateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FirmwareUpdateError::IOError(error) => Display::fmt(error, f),
-            FirmwareUpdateError::RpcError(error) => Display::fmt(error, f),
+            SlaveFirmwareUpdateError::IOError(error) => Display::fmt(error, f),
+            SlaveFirmwareUpdateError::RpcError(error) => Display::fmt(error, f),
         }
     }
 }
 
-impl Error for FirmwareUpdateError {}
+impl Error for SlaveFirmwareUpdateError {}
 
 impl SlaveFirmwareUpdaterModel {
     pub fn new(rpc_client: RpcClient) -> SlaveFirmwareUpdaterModel {
@@ -120,7 +120,7 @@ impl MicroModel for SlaveFirmwareUpdaterModel {
                         match async_std::fs::File::open(path).await {
                             Ok(mut file) => {
                                 let mut bytes = Vec::new();
-                                file.read_to_end(&mut bytes).await.map_err(FirmwareUpdateError::IOError);
+                                file.read_to_end(&mut bytes).await.map_err(SlaveFirmwareUpdateError::IOError)?;
                                 let bytes = bytes.as_slice();
                                 let md5_string = format!("{:x}", md5::compute(&bytes));
                                 let bytes_encoded = base64::encode(bytes);
@@ -129,9 +129,9 @@ impl MicroModel for SlaveFirmwareUpdaterModel {
                                     compression: String::from("none"),
                                     md5: md5_string,
                                 };
-                                rpc_client.request::<()>("firmware_update", Some(packet.to_rpc_params())).await.map_err(FirmwareUpdateError::RpcError)
+                                rpc_client.request::<()>("update_firmware", Some(packet.to_rpc_params())).await.map(|_| send!(sender, SlaveFirmwareUpdaterMsg::FirmwareUploadProgressUpdated(1.0))).map_err(SlaveFirmwareUpdateError::RpcError)
                             },
-                            Err(err) => Err(FirmwareUpdateError::IOError(err)),
+                            Err(err) => Err(SlaveFirmwareUpdateError::IOError(err)),
                         }
                     }));
                     let handle = task::spawn(async move {

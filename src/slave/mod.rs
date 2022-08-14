@@ -22,7 +22,7 @@ pub mod slave_config;
 pub mod slave_video;
 pub mod firmware_update;
 
-use std::{cell::RefCell, collections::{HashMap, VecDeque, HashSet, BTreeMap}, rc::Rc, sync::{Arc, Mutex}, fmt::Debug, time::{Duration, SystemTime}, io::Error as IOError, error::Error};
+use std::{cell::RefCell, collections::{HashMap, VecDeque, HashSet, BTreeMap}, rc::Rc, sync::{Arc, Mutex}, fmt::Debug, time::{Duration, SystemTime}, error::Error, ops::Deref};
 use async_std::task::{JoinHandle, self};
 
 use glib::{PRIORITY_DEFAULT, Sender, WeakRef, DateTime, MainContext};
@@ -33,7 +33,7 @@ use relm4::{WidgetPlus, factory::{FactoryPrototype, FactoryVec, positions::GridP
 use relm4_macros::micro_widget;
 
 use jsonrpsee_http_client::{HttpClient, HttpClientBuilder};
-use jsonrpsee_core::{client::ClientT, rpc_params, Error as RpcError};
+use jsonrpsee_core::{client::ClientT, Error as RpcError};
 
 use serde::{Serialize, Deserialize};
 use derivative::*;
@@ -752,31 +752,31 @@ impl MicroModel for SlaveModel {
                 }
             },
             SlaveMsg::OpenFirmwareUpater => {
-                // match self.get_tcp_stream() {
-                //     Some(tcp_stream) => {
-                //         let component = MicroComponent::new(SlaveFirmwareUpdaterModel::new(Deref::deref(tcp_stream).clone()), sender.clone());
-                //         let window = component.root_widget();
-                //         window.set_transient_for(app_window.upgrade().as_ref());
-                //         window.set_visible(true);
-                //     },
-                //     None => {
-                //         error_message("错误", "请确保下位机处于连接状态。", app_window.upgrade().as_ref());
-                //     },
-                // }
+                match self.get_rpc_client() {
+                    Some(rpc_client) => {
+                        let component = MicroComponent::new(SlaveFirmwareUpdaterModel::new(Deref::deref(rpc_client).clone()), sender.clone());
+                        let window = component.root_widget();
+                        window.set_transient_for(app_window.upgrade().as_ref());
+                        window.set_visible(true);
+                    },
+                    None => {
+                        error_message("错误", "请确保下位机处于连接状态。", app_window.upgrade().as_ref());
+                    },
+                }
             },
             SlaveMsg::OpenParameterTuner => {
-                // match self.get_tcp_stream() {
-                //     Some(tcp_stream) => {
-                //         let component = MicroComponent::new(SlaveParameterTunerModel::new(*self.preferences.borrow().get_default_param_tuner_graph_view_point_num_limit()), sender.clone());
-                //         let window = component.root_widget();
-                //         window.set_transient_for(app_window.upgrade().as_ref());
-                //         window.set_visible(true);
-                //         send!(component.sender(), SlaveParameterTunerMsg::StartDebug(Deref::deref(tcp_stream).clone()));
-                //     },
-                //     None => {
-                //         error_message("错误", "请确保下位机处于连接状态。", app_window.upgrade().as_ref());
-                //     },
-                // }
+                match self.get_rpc_client() {
+                    Some(rpc_client) => {
+                        let component = MicroComponent::new(SlaveParameterTunerModel::new(*self.preferences.borrow().get_default_param_tuner_graph_view_point_num_limit()), sender.clone());
+                        let window = component.root_widget();
+                        window.set_transient_for(app_window.upgrade().as_ref());
+                        window.set_visible(true);
+                        send!(component.sender(), SlaveParameterTunerMsg::StartDebug(Deref::deref(rpc_client).clone()));
+                    },
+                    None => {
+                        error_message("错误", "请确保下位机处于连接状态。", app_window.upgrade().as_ref());
+                    },
+                }
             },
             SlaveMsg::DestroySlave => {
                 if let Some(polling) = self.get_polling() {
@@ -1030,6 +1030,7 @@ impl <T: Serialize> AsRpcParams for T {
     fn to_rpc_params(&self) -> RpcParams {
         match serde_json::to_value(self).unwrap() {
             serde_json::Value::Object(map) => map.into_iter().map(|(key, value)| ((Box::leak(Box::new(key)) as &'static str), value)).collect::<BTreeMap<_, _>>().into(),
+            serde_json::Value::Array(vec) => vec.into(),
             x => vec![x].into(),
         }
     }
