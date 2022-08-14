@@ -38,3 +38,4 @@ md5 = "0.7"
 url = { version = "2", features = ["serde"] }
 jsonrpsee-core = { version = "0.15", default-features = false }
 jsonrpsee-http-client = { version = "0.15", default-features = false }
+base64 = "0.13"

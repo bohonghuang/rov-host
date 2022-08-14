@@ -22,7 +22,7 @@ pub mod slave_config;
 pub mod slave_video;
 pub mod firmware_update;
 
-use std::{cell::RefCell, collections::{HashMap, VecDeque, HashSet, BTreeMap}, rc::Rc, sync::{Arc, Mutex}, fmt::Debug, time::{Duration, SystemTime}, io::Error as IOError};
+use std::{cell::RefCell, collections::{HashMap, VecDeque, HashSet, BTreeMap}, rc::Rc, sync::{Arc, Mutex}, fmt::Debug, time::{Duration, SystemTime}, io::Error as IOError, error::Error};
 use async_std::task::{JoinHandle, self};
 
 use glib::{PRIORITY_DEFAULT, Sender, WeakRef, DateTime, MainContext};
@@ -551,7 +551,7 @@ pub enum SlaveTcpMsg {
     ConnectionLost(RpcError),
     Disconnect,
     ControlUpdated(ControlPacket),
-    Block(JoinHandle<Result<(), IOError>>),
+    Block(JoinHandle<Result<(), Box<dyn Error + Send>>>),
 }
 
 async fn tcp_main_handler(input_rate: u16,
@@ -1021,7 +1021,7 @@ impl ToString for ControlPacket {
     }
 }
 
-trait AsRpcParams {
+pub trait AsRpcParams {
     fn to_rpc_params(&self) -> RpcParams;
 }
 

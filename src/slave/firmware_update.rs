@@ -16,8 +16,10 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+use std::error::Error;
+use std::fmt::Display;
 use std::{path::PathBuf, fmt::Debug};
-use async_std::{io::ReadExt, net::TcpStream, task, prelude::*};
+use async_std::{io::ReadExt, task};
 
 use glib::Sender;
 use glib_macros::clone;
@@ -30,8 +32,10 @@ use relm4_macros::micro_widget;
 use serde::{Serialize, Deserialize};
 use derivative::*;
 
+use jsonrpsee_core::client::ClientT;
+
 use crate::prelude::*;
-use crate::slave::SlaveTcpMsg;
+use crate::slave::{SlaveTcpMsg, RpcClient, AsRpcParams};
 use crate::ui::generic::select_path;
 
 use super::SlaveMsg;
@@ -52,31 +56,43 @@ pub struct SlaveFirmwareUpdaterModel {
     firmware_file_path: Option<PathBuf>,
     firmware_uploading_progress: f32,
     #[no_eq]
-    _tcp_stream: OnceCell<TcpStream>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SlaveFirmwareUpdatePacket {
-    firmware_update: SlaveFirmwarePacket,
+    _rpc_client: OnceCell<RpcClient>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SlaveFirmwarePacket {
-    size: usize,
+    data: String,
     compression: String,
     md5: String,
 }
 
+#[derive(Debug)]
+pub enum FirmwareUpdateError {
+    IOError(std::io::Error),
+    RpcError(jsonrpsee_core::Error),
+}
+
+impl Display for FirmwareUpdateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FirmwareUpdateError::IOError(error) => Display::fmt(error, f),
+            FirmwareUpdateError::RpcError(error) => Display::fmt(error, f),
+        }
+    }
+}
+
+impl Error for FirmwareUpdateError {}
+
 impl SlaveFirmwareUpdaterModel {
-    pub fn new(tcp_stream: TcpStream) -> SlaveFirmwareUpdaterModel {
+    pub fn new(rpc_client: RpcClient) -> SlaveFirmwareUpdaterModel {
         SlaveFirmwareUpdaterModel {
-            _tcp_stream: OnceCell::from(tcp_stream),
+            _rpc_client: OnceCell::from(rpc_client),
             ..Default::default()
         }
     }
     
-    pub fn get_tcp_stream(&self) -> &TcpStream {
-        self._tcp_stream.get().unwrap()
+    pub fn get_rpc_client(&self) -> &RpcClient {
+        self._rpc_client.get().unwrap()
     }
 }
 
@@ -99,39 +115,23 @@ impl MicroModel for SlaveFirmwareUpdaterModel {
             SlaveFirmwareUpdaterMsg::StartUpload => {
                 if let Some(path) = self.get_firmware_file_path() {
                     send!(sender, SlaveFirmwareUpdaterMsg::NextStep);
-                    let mut tcp_stream = self.get_tcp_stream().clone();
+                    let rpc_client = self.get_rpc_client().clone();
                     let handle = task::spawn(clone!(@strong sender, @strong path => async move {
                         match async_std::fs::File::open(path).await {
                             Ok(mut file) => {
                                 let mut bytes = Vec::new();
-                                file.read_to_end(&mut bytes).await?;
+                                file.read_to_end(&mut bytes).await.map_err(FirmwareUpdateError::IOError);
                                 let bytes = bytes.as_slice();
                                 let md5_string = format!("{:x}", md5::compute(&bytes));
-                                let packet = SlaveFirmwareUpdatePacket {
-                                    firmware_update: SlaveFirmwarePacket {
-                                        size: bytes.len(),
-                                        compression: String::from("none"),
-                                        md5: md5_string,
-                                    }
+                                let bytes_encoded = base64::encode(bytes);
+                                let packet = SlaveFirmwarePacket {
+                                    data: bytes_encoded,
+                                    compression: String::from("none"),
+                                    md5: md5_string,
                                 };
-                                let json = serde_json::to_string(&packet).unwrap();
-                                let mut json_bytes = json.as_bytes();
-                                async_std::io::copy(&mut json_bytes, &mut tcp_stream).await?;
-                                let chunks = bytes.chunks(1024);
-                                let chunk_num = chunks.len();
-                                if chunk_num > 0 {
-                                    for (chunk_index, chunk) in chunks.enumerate() {
-                                        tcp_stream.write(chunk).await?;
-                                        let progress = (chunk_index + 1) as f32 / chunk_num as f32;
-                                        send!(sender, SlaveFirmwareUpdaterMsg::FirmwareUploadProgressUpdated(progress));
-                                    }
-                                    tcp_stream.flush().await?;
-                                } else {
-                                    send!(sender, SlaveFirmwareUpdaterMsg::FirmwareUploadProgressUpdated(1.0));
-                                }
-                                Ok(())
+                                rpc_client.request::<()>("firmware_update", Some(packet.to_rpc_params())).await.map_err(FirmwareUpdateError::RpcError)
                             },
-                            Err(err) => Err(err),
+                            Err(err) => Err(FirmwareUpdateError::IOError(err)),
                         }
                     }));
                     let handle = task::spawn(async move {
@@ -139,7 +139,7 @@ impl MicroModel for SlaveFirmwareUpdaterModel {
                         if result.is_err() {
                             send!(sender, SlaveFirmwareUpdaterMsg::FirmwareUploadFailed);
                         }
-                        result
+                        result.map_err(|err| Box::new(err) as Box<dyn Error + Send>)
                     });
                     send!(parent_sender, SlaveMsg::TcpMessage(SlaveTcpMsg::Block(handle)));
                 }
@@ -264,6 +264,6 @@ impl MicroWidgets<SlaveFirmwareUpdaterModel> for SlaveFirmwareUpdaterWidgets {
 
 impl Debug for SlaveFirmwareUpdaterWidgets {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.root_widget().fmt(f)
+        Debug::fmt(&self.root_widget(), f)
     }
 }
