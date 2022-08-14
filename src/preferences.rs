@@ -80,7 +80,7 @@ pub struct PreferencesModel {
     pub image_save_format: ImageFormat,
     pub default_reencode_recording_video: bool,
     pub default_video_encoder: VideoEncoder,
-    #[derivative(Default(value="Url::from_str(\"tcp://192.168.137.219:8888\").unwrap()"))]
+    #[derivative(Default(value="Url::from_str(\"http://192.168.137.219:8888\").unwrap()"))]
     pub default_slave_url: Url,
     #[derivative(Default(value="Url::from_str(\"rtp://127.0.0.1:5600?encoding-name=H264\").unwrap()"))]
     pub default_video_url: Url,

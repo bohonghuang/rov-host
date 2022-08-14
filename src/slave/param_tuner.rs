@@ -30,7 +30,7 @@ use derivative::*;
 use jsonrpsee_core::client::ClientT;
 
 use crate::ui::graph_view::{GraphView, Point as GraphPoint};
-use crate::slave::{SlaveTcpMsg, RpcClient, AsRpcParams, protocol::*};
+use crate::slave::{SlaveCommunicationMsg, RpcClient, AsRpcParams, protocol::*};
 use crate::function::*;
 
 use super::SlaveMsg;
@@ -49,7 +49,7 @@ pub enum SlaveParameterTunerMsg {
     ResetParameters,
     ApplyParameters,
     StartDebug(RpcClient),
-    StopDebug,
+    StopDebug(Option<SlaveParameterTunerError>),
     FeedbacksReceived(SlaveParameterTunerFeedbackPacket),
     ParametersReceived(SlaveParameterTunerParameterPacket),
 }
@@ -201,7 +201,7 @@ pub struct SlaveParameterTunerModel {
     #[derivative(Default(value="FactoryVec::new()"))]
     control_loops: FactoryVec<ControlLoopModel>,
     #[no_eq]
-    tcp_msg_sender: Option<async_std::channel::Sender<SlaveParameterTunerTcpMsg>>,
+    communication_msg_sender: Option<async_std::channel::Sender<SlaveParameterTunerCommunicationMsg>>,
     graph_view_point_num_limit: u16,
     stopped: bool,
 }
@@ -526,7 +526,7 @@ impl MicroWidgets<SlaveParameterTunerModel> for SlaveParameterTunerWidgets {
             },
             set_destroy: track!(model.changed(SlaveParameterTunerModel::stopped()), *model.get_stopped()),
             connect_close_request(sender) => move |_window| {
-                send!(sender, SlaveParameterTunerMsg::StopDebug);
+                send!(sender, SlaveParameterTunerMsg::StopDebug(None));
                 Inhibit(false)
             },
         }
@@ -599,7 +599,7 @@ pub struct SlaveParameterTunerFeedbackPacket {
 }
 
 #[derive(Debug)]
-enum SlaveParameterTunerTcpMsg {
+enum SlaveParameterTunerCommunicationMsg {
     UploadParameters(SlaveParameterTunerParameterPacket),
     RequestParameters,
     SetDebugModeEnabled(bool),
@@ -608,13 +608,13 @@ enum SlaveParameterTunerTcpMsg {
     PreviewControlLoop(String, ControlLoop),
     PreviewControlLoops(HashMap<String, ControlLoop>),
     ConnectionLost(jsonrpsee_core::Error),
-    Terminate,
+    Terminate(Option<SlaveParameterTunerError>),
 }
 
-async fn parameter_tuner_handler(rpc_client: RpcClient,
-                                 tcp_sender: async_std::channel::Sender<SlaveParameterTunerTcpMsg>,
-                                 tcp_receiver: async_std::channel::Receiver<SlaveParameterTunerTcpMsg>,
-                                 model_sender: Sender<SlaveParameterTunerMsg>) -> Result<(), SlaveParameterTunerError> {
+async fn parameter_tuner_main_loop(rpc_client: RpcClient,
+                                   communication_sender: async_std::channel::Sender<SlaveParameterTunerCommunicationMsg>,
+                                   communication_receiver: async_std::channel::Receiver<SlaveParameterTunerCommunicationMsg>,
+                                   model_sender: Sender<SlaveParameterTunerMsg>) -> Result<(), SlaveParameterTunerError> {
     fn current_millis() -> u128 {
         SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis()
     }
@@ -622,27 +622,27 @@ async fn parameter_tuner_handler(rpc_client: RpcClient,
     let last_propeller_preview_timestamp = async_std::sync::Arc::new(async_std::sync::Mutex::new(None as Option<u128>));
     let preview_propellers_value = async_std::sync::Arc::new(async_std::sync::Mutex::new(HashMap::<String, i8>::new()));
     let preview_control_loops = async_std::sync::Arc::new(async_std::sync::Mutex::new(HashMap::<String, ControlLoop>::new()));
-    let receive_task = task::spawn(clone!(@strong rpc_client, @strong model_sender, @strong tcp_sender => async move {
+    let receive_task = task::spawn(clone!(@strong rpc_client, @strong model_sender, @strong communication_sender => async move {
         loop {
             match rpc_client.request::<SlaveParameterTunerFeedbackPacket>(METHOD_GET_FEEDBACKS, None).await {
                 Ok(packet) => send!(model_sender, SlaveParameterTunerMsg::FeedbacksReceived(packet)),
-                Err(err) => tcp_sender.send(SlaveParameterTunerTcpMsg::ConnectionLost(err)).await.unwrap_or_default(),
+                Err(err) => communication_sender.send(SlaveParameterTunerCommunicationMsg::ConnectionLost(err)).await.unwrap_or_default(),
             }
             task::sleep(Duration::from_millis(250)).await;
         }
     }));
 
-    let parameter_preview_task = task::spawn(clone!(@strong tcp_sender, @strong preview_propellers_value, @strong preview_control_loops => async move {
+    let parameter_preview_task = task::spawn(clone!(@strong communication_sender, @strong preview_propellers_value, @strong preview_control_loops => async move {
         loop {
             if !preview_propellers_value.lock().await.is_empty() {
                 let propeller_values = std::mem::replace(&mut *preview_propellers_value.lock().await, HashMap::new());
-                if tcp_sender.send(SlaveParameterTunerTcpMsg::PreviewPropellers(propeller_values)).await.is_err() {
+                if communication_sender.send(SlaveParameterTunerCommunicationMsg::PreviewPropellers(propeller_values)).await.is_err() {
                     break;
                 }
             }
             if !preview_control_loops.lock().await.is_empty() {
                 let control_loops = std::mem::replace(&mut *preview_control_loops.lock().await, HashMap::new());
-                if tcp_sender.send(SlaveParameterTunerTcpMsg::PreviewControlLoops(control_loops)).await.is_err() {
+                if communication_sender.send(SlaveParameterTunerCommunicationMsg::PreviewControlLoops(control_loops)).await.is_err() {
                     break;
                 }
             }
@@ -651,12 +651,12 @@ async fn parameter_tuner_handler(rpc_client: RpcClient,
         }
     }));
     
-    let stop_propeller_preview_task = task::spawn(clone!(@strong tcp_sender, @strong last_propeller_preview_timestamp => async move {
+    let stop_propeller_preview_task = task::spawn(clone!(@strong communication_sender, @strong last_propeller_preview_timestamp => async move {
         loop {
             let mut last_millis = last_propeller_preview_timestamp.lock().await;
             if let Some(millis) = *last_millis {
                 if current_millis() - millis >= PREVIEW_TIME_MILLIS {
-                    if tcp_sender.send(SlaveParameterTunerTcpMsg::PreviewPropellers(DEFAULT_PROPELLERS.iter().map(|x| (x.to_string(), 0i8)).collect())).await.is_err() {
+                    if communication_sender.send(SlaveParameterTunerCommunicationMsg::PreviewPropellers(DEFAULT_PROPELLERS.iter().map(|x| (x.to_string(), 0i8)).collect())).await.is_err() {
                         break;
                     }
                     *last_millis = None;
@@ -666,65 +666,69 @@ async fn parameter_tuner_handler(rpc_client: RpcClient,
             task::sleep(Duration::from_millis(500)).await;
         }
     }));
+
+    communication_sender.send(SlaveParameterTunerCommunicationMsg::RequestParameters).await.unwrap_or_default();
     
     loop {
-        match tcp_receiver.recv().await {
+        match communication_receiver.recv().await {
             Ok(msg) => {
                 match msg {
-                    SlaveParameterTunerTcpMsg::UploadParameters(parameters) => {
+                    SlaveParameterTunerCommunicationMsg::UploadParameters(parameters) => {
                         match rpc_client.batch_request::<()>(vec![(METHOD_SET_PROPELLER_PWM_FREQ_CALIBRATION, Some(parameters.propeller_pwm_freq_calibration.to_rpc_params())),
-                                                                  (METHOD_SET_PROPELLER_PARAMETERS, Some(vec![parameters.propeller_parameters].to_rpc_params())),
-                                                                  (METHOD_SET_CONTROL_LOOP_PARAMETERS, Some(vec![parameters.control_loop_parameters].to_rpc_params()))]).await {
+                                                                  (METHOD_SET_PROPELLER_PARAMETERS, Some(parameters.propeller_parameters.to_rpc_params())),
+                                                                  (METHOD_SET_CONTROL_LOOP_PARAMETERS, Some(parameters.control_loop_parameters.to_rpc_params()))]).await {
                             Ok(_) => {
                                 if let Err(err) = rpc_client.request::<()>(METHOD_SAVE_PARAMETERS, None).await {
-                                    tcp_sender.send(SlaveParameterTunerTcpMsg::ConnectionLost(err)).await.unwrap_or_default();
+                                    communication_sender.send(SlaveParameterTunerCommunicationMsg::ConnectionLost(err)).await.unwrap_or_default();
                                 }
                             },
                             Err(err) => {
-                                tcp_sender.send(SlaveParameterTunerTcpMsg::ConnectionLost(err)).await.unwrap_or_default();
+                                communication_sender.send(SlaveParameterTunerCommunicationMsg::ConnectionLost(err)).await.unwrap_or_default();
                             },
                         };
                     },
-                    SlaveParameterTunerTcpMsg::RequestParameters => {
+                    SlaveParameterTunerCommunicationMsg::RequestParameters => {
                         match rpc_client.request::<SlaveParameterTunerParameterPacket>(METHOD_LOAD_PARAMETERS, None).await {
                             Ok(packet) => {
                                 send!(model_sender, SlaveParameterTunerMsg::ParametersReceived(packet));
                             },
                             Err(err) => {
-                                tcp_sender.send(SlaveParameterTunerTcpMsg::ConnectionLost(err)).await.unwrap_or_default();
+                                communication_sender.send(SlaveParameterTunerCommunicationMsg::ConnectionLost(err)).await.unwrap_or_default();
                             },
                         }
                     },
-                    SlaveParameterTunerTcpMsg::Terminate => {
+                    SlaveParameterTunerCommunicationMsg::Terminate(error) => {
                         receive_task.cancel().await;
                         parameter_preview_task.cancel().await;
                         stop_propeller_preview_task.cancel().await;
-                        break;
-                    },
-                    SlaveParameterTunerTcpMsg::ConnectionLost(err) => {
-                        send!(model_sender, SlaveParameterTunerMsg::StopDebug);
-                        return Err(SlaveParameterTunerError::RpcError(err));
-                    },
-                    SlaveParameterTunerTcpMsg::SetDebugModeEnabled(enabled) => {
-                        if let Err(err) = rpc_client.request::<()>(METHOD_SET_DEBUG_MODE_ENABLED, Some(enabled.to_rpc_params())).await {
-                            tcp_sender.send(SlaveParameterTunerTcpMsg::ConnectionLost(err)).await.unwrap_or_default();
+                        match error {
+                            Some(error) => return Err(error),
+                            None => break,
                         }
                     },
-                    SlaveParameterTunerTcpMsg::PreviewPropeller(name, value) => {
+                    SlaveParameterTunerCommunicationMsg::ConnectionLost(err) => {
+                        send!(model_sender, SlaveParameterTunerMsg::StopDebug(Some(SlaveParameterTunerError::RpcError(err))));
+                    },
+                    SlaveParameterTunerCommunicationMsg::SetDebugModeEnabled(enabled) => {
+                        if let Err(err) = rpc_client.request::<()>(METHOD_SET_DEBUG_MODE_ENABLED, Some(enabled.to_rpc_params())).await {
+                            communication_sender.send(SlaveParameterTunerCommunicationMsg::ConnectionLost(err)).await.unwrap_or_default();
+                        }
+                    },
+                    SlaveParameterTunerCommunicationMsg::PreviewPropeller(name, value) => {
                         preview_propellers_value.lock().await.insert(name, value);
                         *last_propeller_preview_timestamp.lock().await = Some(current_millis());
                     },
-                    SlaveParameterTunerTcpMsg::PreviewPropellers(propeller_values) => {
-                        if let Err(err) = rpc_client.request::<()>(METHOD_SET_PROPELLER_VALUES, Some(vec![propeller_values].to_rpc_params())).await {
-                            tcp_sender.send(SlaveParameterTunerTcpMsg::ConnectionLost(err)).await.unwrap_or_default();
+                    SlaveParameterTunerCommunicationMsg::PreviewPropellers(propeller_values) => {
+                        if let Err(err) = rpc_client.request::<()>(METHOD_SET_PROPELLER_VALUES, Some(propeller_values.to_rpc_params())).await {
+                            communication_sender.send(SlaveParameterTunerCommunicationMsg::ConnectionLost(err)).await.unwrap_or_default();
                         }
                     },
-                    SlaveParameterTunerTcpMsg::PreviewControlLoops(control_loops) => {
-                        if let Err(err) = rpc_client.request::<()>(METHOD_SET_CONTROL_LOOP_PARAMETERS, Some(vec![control_loops].to_rpc_params())).await {
-                            tcp_sender.send(SlaveParameterTunerTcpMsg::ConnectionLost(err)).await.unwrap_or_default();
+                    SlaveParameterTunerCommunicationMsg::PreviewControlLoops(control_loops) => {
+                        if let Err(err) = rpc_client.request::<()>(METHOD_SET_CONTROL_LOOP_PARAMETERS, Some(control_loops.to_rpc_params())).await {
+                            communication_sender.send(SlaveParameterTunerCommunicationMsg::ConnectionLost(err)).await.unwrap_or_default();
                         }
                     },
-                    SlaveParameterTunerTcpMsg::PreviewControlLoop(name, value) => {
+                    SlaveParameterTunerCommunicationMsg::PreviewControlLoop(name, value) => {
                         preview_control_loops.lock().await.insert(name, value);
                     },
                 }
@@ -732,7 +736,7 @@ async fn parameter_tuner_handler(rpc_client: RpcClient,
             Err(_) => (),
         }
     }
-    tcp_receiver.close();
+    communication_receiver.close();
     Ok(())
 }
 
@@ -751,8 +755,8 @@ impl MicroModel for SlaveParameterTunerModel {
                     propeller.set_deadzone_lower(value);
                     propeller.set_deadzone_upper(max(*propeller.get_deadzone_upper(), value));
                 }               // 不使用 unsafe 似乎无法在结束可变借用生命周期的同时将其转换为不可变借用？
-                if let (Some(propeller), Some(msg_sender)) = (self.propellers.get(index), self.get_tcp_msg_sender()) {
-                    msg_sender.try_send(SlaveParameterTunerTcpMsg::PreviewPropeller(propeller.get_key().clone(), value)).unwrap_or_default();
+                if let (Some(propeller), Some(msg_sender)) = (self.propellers.get(index), self.get_communication_msg_sender()) {
+                    msg_sender.try_send(SlaveParameterTunerCommunicationMsg::PreviewPropeller(propeller.get_key().clone(), value)).unwrap_or_default();
                 }
             },
             SlaveParameterTunerMsg::SetPropellerUpperDeadzone(index, value) => {
@@ -761,8 +765,8 @@ impl MicroModel for SlaveParameterTunerModel {
                     propeller.set_deadzone_upper(value);
                     propeller.set_deadzone_lower(min(*propeller.get_deadzone_lower(), value));
                 }
-                if let (Some(propeller), Some(msg_sender)) = (self.propellers.get(index), self.get_tcp_msg_sender()) {
-                    msg_sender.try_send(SlaveParameterTunerTcpMsg::PreviewPropeller(propeller.get_key().clone(), value)).unwrap_or_default();
+                if let (Some(propeller), Some(msg_sender)) = (self.propellers.get(index), self.get_communication_msg_sender()) {
+                    msg_sender.try_send(SlaveParameterTunerCommunicationMsg::PreviewPropeller(propeller.get_key().clone(), value)).unwrap_or_default();
                 }
             },
             SlaveParameterTunerMsg::SetPropellerPowerPositive(index, value) => {
@@ -794,8 +798,8 @@ impl MicroModel for SlaveParameterTunerModel {
                     pids.reset();
                     pids.set_p(value);
                 }
-                if let (Some(pids), Some(msg_sender)) = (self.control_loops.get(index), self.get_tcp_msg_sender()) {
-                    msg_sender.try_send(SlaveParameterTunerTcpMsg::PreviewControlLoop.apply(pids.to_control_loop())).unwrap_or_default();
+                if let (Some(pids), Some(msg_sender)) = (self.control_loops.get(index), self.get_communication_msg_sender()) {
+                    msg_sender.try_send(SlaveParameterTunerCommunicationMsg::PreviewControlLoop.apply(pids.to_control_loop())).unwrap_or_default();
                 }
             },
             SlaveParameterTunerMsg::SetI(index, value) => {
@@ -803,8 +807,8 @@ impl MicroModel for SlaveParameterTunerModel {
                     pids.reset();
                     pids.set_i(value);
                 }
-                if let (Some(pids), Some(msg_sender)) = (self.control_loops.get(index), self.get_tcp_msg_sender()) {
-                    msg_sender.try_send(SlaveParameterTunerTcpMsg::PreviewControlLoop.apply(pids.to_control_loop())).unwrap_or_default();
+                if let (Some(pids), Some(msg_sender)) = (self.control_loops.get(index), self.get_communication_msg_sender()) {
+                    msg_sender.try_send(SlaveParameterTunerCommunicationMsg::PreviewControlLoop.apply(pids.to_control_loop())).unwrap_or_default();
                 }
             },
             SlaveParameterTunerMsg::SetD(index, value) => {
@@ -812,18 +816,18 @@ impl MicroModel for SlaveParameterTunerModel {
                     pids.reset();
                     pids.set_d(value);
                 }
-                if let (Some(pids), Some(msg_sender)) = (self.control_loops.get(index), self.get_tcp_msg_sender()) {
-                    msg_sender.try_send(SlaveParameterTunerTcpMsg::PreviewControlLoop.apply(pids.to_control_loop())).unwrap_or_default();
+                if let (Some(pids), Some(msg_sender)) = (self.control_loops.get(index), self.get_communication_msg_sender()) {
+                    msg_sender.try_send(SlaveParameterTunerCommunicationMsg::PreviewControlLoop.apply(pids.to_control_loop())).unwrap_or_default();
                 }
             },
             SlaveParameterTunerMsg::ResetParameters => {
-                if let Some(msg_sender) = self.get_tcp_msg_sender() {
-                    msg_sender.try_send(SlaveParameterTunerTcpMsg::RequestParameters).unwrap_or_default();
+                if let Some(msg_sender) = self.get_communication_msg_sender() {
+                    msg_sender.try_send(SlaveParameterTunerCommunicationMsg::RequestParameters).unwrap_or_default();
                 }
             },
             SlaveParameterTunerMsg::ApplyParameters => {
-                if let Some(msg_sender) = self.get_tcp_msg_sender() {
-                    msg_sender.try_send(SlaveParameterTunerTcpMsg::UploadParameters(SlaveParameterTunerParameterPacket {
+                if let Some(msg_sender) = self.get_communication_msg_sender() {
+                    msg_sender.try_send(SlaveParameterTunerCommunicationMsg::UploadParameters(SlaveParameterTunerParameterPacket {
                         propeller_pwm_freq_calibration: self.propeller_pwm_frequency_calibration,
                         propeller_parameters: PropellerModel::vec_to_map(self.propellers.iter().collect()),
                         control_loop_parameters: ControlLoopModel::vec_to_map(self.control_loops.iter().collect()),
@@ -832,20 +836,20 @@ impl MicroModel for SlaveParameterTunerModel {
                 }
             },
             SlaveParameterTunerMsg::StartDebug(rpc_client) => {
-                let (tcp_sender, tcp_receiver) = async_std::channel::bounded::<SlaveParameterTunerTcpMsg>(128);
-                self.tcp_msg_sender = Some(tcp_sender.clone());
+                let (communication_sender, communication_receiver) = async_std::channel::bounded::<SlaveParameterTunerCommunicationMsg>(128);
+                self.communication_msg_sender = Some(communication_sender.clone());
                 let sender = sender.clone();
-                tcp_sender.try_send(SlaveParameterTunerTcpMsg::SetDebugModeEnabled(true)).unwrap_or_default();
+                communication_sender.try_send(SlaveParameterTunerCommunicationMsg::SetDebugModeEnabled(true)).unwrap_or_default();
                 let handle = task::spawn(async move {
-                    parameter_tuner_handler(rpc_client, tcp_sender, tcp_receiver, sender).await.map_err(|err| Box::new(err) as Box<dyn Error + Send>)
+                    parameter_tuner_main_loop(rpc_client, communication_sender, communication_receiver, sender).await.map_err(|err| Box::new(err) as Box<dyn Error + Send>)
                 });
-                send!(parent_sender, SlaveMsg::TcpMessage(SlaveTcpMsg::Block(handle)));
+                send!(parent_sender, SlaveMsg::CommunicationMessage(SlaveCommunicationMsg::Block(handle)));
             },
-            SlaveParameterTunerMsg::StopDebug => {
-                if let Some(msg_sender) = self.get_tcp_msg_sender() {
-                    msg_sender.try_send(SlaveParameterTunerTcpMsg::SetDebugModeEnabled(false)).unwrap_or_default();
-                    msg_sender.try_send(SlaveParameterTunerTcpMsg::Terminate).unwrap_or_default();
-                    self.set_tcp_msg_sender(None);
+            SlaveParameterTunerMsg::StopDebug(error) => {
+                if let Some(msg_sender) = self.get_communication_msg_sender() {
+                    msg_sender.try_send(SlaveParameterTunerCommunicationMsg::SetDebugModeEnabled(false)).unwrap_or_default();
+                    msg_sender.try_send(SlaveParameterTunerCommunicationMsg::Terminate(error)).unwrap_or_default();
+                    self.set_communication_msg_sender(None);
                     self.set_stopped(true);
                 }
             },
@@ -885,7 +889,7 @@ impl MicroModel for SlaveParameterTunerModel {
                 }
             },
             SlaveParameterTunerMsg::SetPropellerPwmFreqCalibration(cal) => {
-              self.set_propeller_pwm_frequency_calibration(cal);
+                self.set_propeller_pwm_frequency_calibration(cal);
             },
         }
     }
