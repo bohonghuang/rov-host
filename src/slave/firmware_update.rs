@@ -35,7 +35,7 @@ use derivative::*;
 use jsonrpsee_core::client::ClientT;
 
 use crate::prelude::*;
-use crate::slave::{SlaveTcpMsg, RpcClient, AsRpcParams};
+use crate::slave::{SlaveTcpMsg, RpcClient, AsRpcParams, protocol::*};
 use crate::ui::generic::select_path;
 
 use super::SlaveMsg;
@@ -129,7 +129,7 @@ impl MicroModel for SlaveFirmwareUpdaterModel {
                                     compression: String::from("none"),
                                     md5: md5_string,
                                 };
-                                rpc_client.request::<()>("update_firmware", Some(packet.to_rpc_params())).await.map(|_| send!(sender, SlaveFirmwareUpdaterMsg::FirmwareUploadProgressUpdated(1.0))).map_err(SlaveFirmwareUpdateError::RpcError)
+                                rpc_client.request::<()>(METHOD_UPDATE_FIRMWARE, Some(packet.to_rpc_params())).await.map(|_| send!(sender, SlaveFirmwareUpdaterMsg::FirmwareUploadProgressUpdated(1.0))).map_err(SlaveFirmwareUpdateError::RpcError)
                             },
                             Err(err) => Err(SlaveFirmwareUpdateError::IOError(err)),
                         }

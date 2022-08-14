@@ -21,6 +21,7 @@ pub mod param_tuner;
 pub mod slave_config;
 pub mod slave_video;
 pub mod firmware_update;
+pub mod protocol;
 
 use std::{cell::RefCell, collections::{HashMap, VecDeque, HashSet, BTreeMap}, rc::Rc, sync::{Arc, Mutex}, fmt::Debug, time::{Duration, SystemTime}, error::Error, ops::Deref};
 use async_std::task::{JoinHandle, self};
@@ -42,7 +43,7 @@ use crate::{input::{InputSource, InputSourceEvent, InputSystem, Button, Axis}, s
 use crate::preferences::PreferencesModel;
 use crate::ui::generic::error_message;
 use crate::AppMsg;
-use self::{param_tuner::SlaveParameterTunerModel, slave_config::{SlaveConfigModel, SlaveConfigMsg}, slave_video::{SlaveVideoModel, SlaveVideoMsg}, firmware_update::SlaveFirmwareUpdaterModel};
+use self::{param_tuner::SlaveParameterTunerModel, slave_config::{SlaveConfigModel, SlaveConfigMsg}, slave_video::{SlaveVideoModel, SlaveVideoMsg}, firmware_update::SlaveFirmwareUpdaterModel, protocol::*};
 
 
 pub type RpcClient = HttpClient;
@@ -570,7 +571,7 @@ async fn tcp_main_handler(input_rate: u16,
 
     let receive_task = task::spawn(clone!(@strong tcp_sender, @strong idle, @strong slave_sender, @strong rpc_client => async move {
         loop {
-            if let Ok(info) = rpc_client.request::<HashMap<String, String>>("get_info", None).await {
+            if let Ok(info) = rpc_client.request::<HashMap<String, String>>(METHOD_GET_INFO, None).await {
                 send!(slave_sender, SlaveMsg:: InformationsReceived(info));
             }
             task::sleep(Duration::from_millis(1000)).await;
@@ -585,10 +586,10 @@ async fn tcp_main_handler(input_rate: u16,
             if *idle.lock().await {
                 let mut control_mutex = control_packet.lock().await;
                 if let Some(control) = control_mutex.as_ref() {
-                    match rpc_client.batch_request::<()>(vec![("move", Some(control.motion.to_rpc_params())),
-                                                              ("set_depth_locked", Some(control.depth_locked.to_rpc_params())),
-                                                              ("set_direction_locked", Some(control.depth_locked.to_rpc_params())),
-                                                              ("catch", Some(control.catch.to_rpc_params())),]).await {
+                    match rpc_client.batch_request::<()>(vec![(METHOD_MOVE, Some(control.motion.to_rpc_params())),
+                                                              (METHOD_SET_DEPTH_LOCKED, Some(control.depth_locked.to_rpc_params())),
+                                                              (METHOD_SET_DIRECTION_LOCKED, Some(control.depth_locked.to_rpc_params())),
+                                                              (METHOD_CATCH, Some(control.catch.to_rpc_params())),]).await {
                         Ok(_) => *control_mutex = None,
                         Err(err) => {
                             tcp_sender.send(SlaveTcpMsg::ConnectionLost(err)).await.unwrap_or_default();
@@ -985,11 +986,6 @@ pub struct ControlPacket {
     catch: f32,
     depth_locked: bool,
     direction_locked: bool,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct SlaveInfoPacket {
-    info: HashMap<String, String>,
 }
 
 impl ControlPacket {

@@ -30,7 +30,7 @@ use derivative::*;
 use jsonrpsee_core::client::ClientT;
 
 use crate::ui::graph_view::{GraphView, Point as GraphPoint};
-use crate::slave::{SlaveTcpMsg, RpcClient, AsRpcParams};
+use crate::slave::{SlaveTcpMsg, RpcClient, AsRpcParams, protocol::*};
 use crate::function::*;
 
 use super::SlaveMsg;
@@ -50,8 +50,8 @@ pub enum SlaveParameterTunerMsg {
     ApplyParameters,
     StartDebug(RpcClient),
     StopDebug,
-    FeedbacksReceived(SlaveParameterTunerFeedbackValuePacket),
-    ParametersReceived(SlaveParameterTunerPacket),
+    FeedbacksReceived(SlaveParameterTunerFeedbackPacket),
+    ParametersReceived(SlaveParameterTunerParameterPacket),
 }
 
 #[derive(Debug)]
@@ -586,34 +586,8 @@ impl Debug for SlaveParameterTunerWidgets {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-struct SlaveParameterTunerLoadPacket {
-    load_parameters: ()
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-struct SlaveParameterTunerSavePacket {
-    save_parameters: ()
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-struct SlaveParameterTunerSetPropellerPacket {
-    set_propeller_values: HashMap<String, i8>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-struct SlaveParameterTunerSetControlLoopPacket {
-    set_control_loop_parameters: HashMap<String, ControlLoop>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-struct SlaveParameterTunerSetDebugModeEnabledPacket {
-    set_debug_mode_enabled: bool,
-}
-
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct SlaveParameterTunerPacket {
+pub struct SlaveParameterTunerParameterPacket {
     propeller_pwm_freq_calibration: f64,
     propeller_parameters: HashMap<String, Propeller>,
     control_loop_parameters: HashMap<String, ControlLoop>,
@@ -621,22 +595,12 @@ pub struct SlaveParameterTunerPacket {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SlaveParameterTunerFeedbackPacket {
-    feedbacks: SlaveParameterTunerFeedbackValuePacket,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct SlaveParameterTunerFeedbackValuePacket {
     control_loops: HashMap<String, f32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-struct SlaveParameterTunerUpdatePacket {
-    update_parameters: ()
 }
 
 #[derive(Debug)]
 enum SlaveParameterTunerTcpMsg {
-    UploadParameters(SlaveParameterTunerPacket),
+    UploadParameters(SlaveParameterTunerParameterPacket),
     RequestParameters,
     SetDebugModeEnabled(bool),
     PreviewPropeller(String, i8),
@@ -660,10 +624,10 @@ async fn parameter_tuner_handler(rpc_client: RpcClient,
     let preview_control_loops = async_std::sync::Arc::new(async_std::sync::Mutex::new(HashMap::<String, ControlLoop>::new()));
     let receive_task = task::spawn(clone!(@strong rpc_client, @strong model_sender, @strong tcp_sender => async move {
         loop {
-            // match rpc_client.request::<SlaveParameterTunerFeedbackValuePacket>("get_feedbacks", None).await {
-            //     Ok(packet) => send!(model_sender, SlaveParameterTunerMsg::FeedbacksReceived(packet)),
-            //     Err(err) => tcp_sender.send(SlaveParameterTunerTcpMsg::ConnectionLost(err)).await.unwrap_or_default(),
-            // }
+            match rpc_client.request::<SlaveParameterTunerFeedbackPacket>(METHOD_GET_FEEDBACKS, None).await {
+                Ok(packet) => send!(model_sender, SlaveParameterTunerMsg::FeedbacksReceived(packet)),
+                Err(err) => tcp_sender.send(SlaveParameterTunerTcpMsg::ConnectionLost(err)).await.unwrap_or_default(),
+            }
             task::sleep(Duration::from_millis(250)).await;
         }
     }));
@@ -708,11 +672,11 @@ async fn parameter_tuner_handler(rpc_client: RpcClient,
             Ok(msg) => {
                 match msg {
                     SlaveParameterTunerTcpMsg::UploadParameters(parameters) => {
-                        match rpc_client.batch_request::<()>(vec![("set_propeller_pwm_freq_calibration", Some(parameters.propeller_pwm_freq_calibration.to_rpc_params())),
-                                                                  ("set_propeller_parameters", Some(vec![parameters.propeller_parameters].to_rpc_params())),
-                                                                  ("set_control_loop_parameters", Some(vec![parameters.control_loop_parameters].to_rpc_params()))]).await {
+                        match rpc_client.batch_request::<()>(vec![(METHOD_SET_PROPELLER_PWM_FREQ_CALIBRATION, Some(parameters.propeller_pwm_freq_calibration.to_rpc_params())),
+                                                                  (METHOD_SET_PROPELLER_PARAMETERS, Some(vec![parameters.propeller_parameters].to_rpc_params())),
+                                                                  (METHOD_SET_CONTROL_LOOP_PARAMETERS, Some(vec![parameters.control_loop_parameters].to_rpc_params()))]).await {
                             Ok(_) => {
-                                if let Err(err) = rpc_client.request::<()>("save_parameters", None).await {
+                                if let Err(err) = rpc_client.request::<()>(METHOD_SAVE_PARAMETERS, None).await {
                                     tcp_sender.send(SlaveParameterTunerTcpMsg::ConnectionLost(err)).await.unwrap_or_default();
                                 }
                             },
@@ -722,7 +686,7 @@ async fn parameter_tuner_handler(rpc_client: RpcClient,
                         };
                     },
                     SlaveParameterTunerTcpMsg::RequestParameters => {
-                        match rpc_client.request::<SlaveParameterTunerPacket>("load_parameters", None).await {
+                        match rpc_client.request::<SlaveParameterTunerParameterPacket>(METHOD_LOAD_PARAMETERS, None).await {
                             Ok(packet) => {
                                 send!(model_sender, SlaveParameterTunerMsg::ParametersReceived(packet));
                             },
@@ -742,7 +706,7 @@ async fn parameter_tuner_handler(rpc_client: RpcClient,
                         return Err(SlaveParameterTunerError::RpcError(err));
                     },
                     SlaveParameterTunerTcpMsg::SetDebugModeEnabled(enabled) => {
-                        if let Err(err) = rpc_client.request::<()>("set_debug_mode_enabled", Some(enabled.to_rpc_params())).await {
+                        if let Err(err) = rpc_client.request::<()>(METHOD_SET_DEBUG_MODE_ENABLED, Some(enabled.to_rpc_params())).await {
                             tcp_sender.send(SlaveParameterTunerTcpMsg::ConnectionLost(err)).await.unwrap_or_default();
                         }
                     },
@@ -751,12 +715,12 @@ async fn parameter_tuner_handler(rpc_client: RpcClient,
                         *last_propeller_preview_timestamp.lock().await = Some(current_millis());
                     },
                     SlaveParameterTunerTcpMsg::PreviewPropellers(propeller_values) => {
-                        if let Err(err) = rpc_client.request::<()>("set_propeller_values", Some(vec![propeller_values].to_rpc_params())).await {
+                        if let Err(err) = rpc_client.request::<()>(METHOD_SET_PROPELLER_VALUES, Some(vec![propeller_values].to_rpc_params())).await {
                             tcp_sender.send(SlaveParameterTunerTcpMsg::ConnectionLost(err)).await.unwrap_or_default();
                         }
                     },
                     SlaveParameterTunerTcpMsg::PreviewControlLoops(control_loops) => {
-                        if let Err(err) = rpc_client.request::<()>("set_control_loop_parameters", Some(vec![control_loops].to_rpc_params())).await {
+                        if let Err(err) = rpc_client.request::<()>(METHOD_SET_CONTROL_LOOP_PARAMETERS, Some(vec![control_loops].to_rpc_params())).await {
                             tcp_sender.send(SlaveParameterTunerTcpMsg::ConnectionLost(err)).await.unwrap_or_default();
                         }
                     },
@@ -859,7 +823,7 @@ impl MicroModel for SlaveParameterTunerModel {
             },
             SlaveParameterTunerMsg::ApplyParameters => {
                 if let Some(msg_sender) = self.get_tcp_msg_sender() {
-                    msg_sender.try_send(SlaveParameterTunerTcpMsg::UploadParameters(SlaveParameterTunerPacket {
+                    msg_sender.try_send(SlaveParameterTunerTcpMsg::UploadParameters(SlaveParameterTunerParameterPacket {
                         propeller_pwm_freq_calibration: self.propeller_pwm_frequency_calibration,
                         propeller_parameters: PropellerModel::vec_to_map(self.propellers.iter().collect()),
                         control_loop_parameters: ControlLoopModel::vec_to_map(self.control_loops.iter().collect()),
@@ -885,7 +849,7 @@ impl MicroModel for SlaveParameterTunerModel {
                     self.set_stopped(true);
                 }
             },
-            SlaveParameterTunerMsg::FeedbacksReceived(SlaveParameterTunerFeedbackValuePacket { control_loops }) => {
+            SlaveParameterTunerMsg::FeedbacksReceived(SlaveParameterTunerFeedbackPacket { control_loops }) => {
                 let limit = *self.get_graph_view_point_num_limit() as usize;
                 for index in 0..self.control_loops.len() {
                     let control_loop_model = self.control_loops.get_mut(index).unwrap();
@@ -898,7 +862,7 @@ impl MicroModel for SlaveParameterTunerModel {
                     }
                 }
             },
-            SlaveParameterTunerMsg::ParametersReceived(SlaveParameterTunerPacket { propeller_pwm_freq_calibration: pwm_freq_calibration, propeller_parameters: propellers, control_loop_parameters: control_loops }) => {
+            SlaveParameterTunerMsg::ParametersReceived(SlaveParameterTunerParameterPacket { propeller_pwm_freq_calibration: pwm_freq_calibration, propeller_parameters: propellers, control_loop_parameters: control_loops }) => {
                 self.set_propeller_pwm_frequency_calibration(pwm_freq_calibration);
                 for index in 0..self.propellers.len() {
                     let propeller_model = self.propellers.get_mut(index).unwrap();
