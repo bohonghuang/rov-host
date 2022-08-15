@@ -559,7 +559,8 @@ async fn communication_main_loop(input_rate: u16,
                                  rpc_client: Arc<RpcClient>,
                                  communication_sender: async_std::channel::Sender<SlaveCommunicationMsg>,
                                  communication_receiver: async_std::channel::Receiver<SlaveCommunicationMsg>,
-                                 slave_sender: Sender<SlaveMsg>) -> Result<(), RpcError> {
+                                 slave_sender: Sender<SlaveMsg>,
+                                 status_info_udpate_interval: u64) -> Result<(), RpcError> {
     fn current_millis() -> u128 {
         SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis()
     }
@@ -571,14 +572,19 @@ async fn communication_main_loop(input_rate: u16,
 
     let receive_task = task::spawn(clone!(@strong communication_sender, @strong idle, @strong slave_sender, @strong rpc_client => async move {
         loop {
-            match rpc_client.request::<HashMap<String, String>>(METHOD_GET_INFO, None).await {
-                Ok(info) => send!(slave_sender, SlaveMsg::InformationsReceived(info)),
-                Err(error) => {
-                    communication_sender.send(SlaveCommunicationMsg::ConnectionLost(error)).await.unwrap_or_default();
-                    break;
-                },
+            if communication_sender.is_closed() {
+                return;
             }
-            task::sleep(Duration::from_millis(500)).await;
+            if *idle.lock().await {
+                match rpc_client.request::<HashMap<String, String>>(METHOD_GET_INFO, None).await {
+                    Ok(info) => send!(slave_sender, SlaveMsg::InformationsReceived(info)),
+                    Err(error) => {
+                        communication_sender.send(SlaveCommunicationMsg::ConnectionLost(error)).await.unwrap_or_default();
+                        break;
+                    },
+                }
+            }
+            task::sleep(Duration::from_millis(status_info_udpate_interval)).await;
         }
     }));                        // 定时请求数据
     
@@ -592,7 +598,7 @@ async fn communication_main_loop(input_rate: u16,
                 if let Some(control) = control_mutex.as_ref() {
                     match rpc_client.batch_request::<()>(vec![(METHOD_MOVE, Some(control.motion.to_rpc_params())),
                                                               (METHOD_SET_DEPTH_LOCKED, Some(control.depth_locked.to_rpc_params())),
-                                                              (METHOD_SET_DIRECTION_LOCKED, Some(control.depth_locked.to_rpc_params())),
+                                                              (METHOD_SET_DIRECTION_LOCKED, Some(control.direction_locked.to_rpc_params())),
                                                               (METHOD_CATCH, Some(control.catch.to_rpc_params())),]).await {
                         Ok(_) => *control_mutex = None,
                         Err(err) => {
@@ -614,6 +620,7 @@ async fn communication_main_loop(input_rate: u16,
                         control_send_task.cancel().await;
                         receive_task.cancel().await;
                         send!(slave_sender, SlaveMsg::ConnectionChanged(None));
+                        communication_receiver.close();
                         break;
                     },
                     SlaveCommunicationMsg::ConnectionLost(err) => {
@@ -675,8 +682,14 @@ impl MicroModel for SlaveModel {
                                 let control_sending_rate = *self.preferences.borrow().get_default_input_sending_rate();
                                 self.set_connected(None);
                                 self.config.send(SlaveConfigMsg::SetConnected(None)).unwrap();
+                                let status_info_update_interval = *self.preferences.borrow().get_default_status_info_update_interval();
                                 async_std::task::spawn(async move {
-                                    communication_main_loop(control_sending_rate, Arc::new(rpc_client), comm_sender, comm_receiver, sender.clone()).await.unwrap_or_default();
+                                    communication_main_loop(control_sending_rate,
+                                                            Arc::new(rpc_client),
+                                                            comm_sender,
+                                                            comm_receiver,
+                                                            sender.clone(),
+                                                            status_info_update_interval as u64).await.unwrap_or_default();
                                 });
                             } else {
                                 error_message("错误", "无法创建 RPC 客户端。", app_window.upgrade().as_ref());
@@ -772,7 +785,9 @@ impl MicroModel for SlaveModel {
             SlaveMsg::OpenParameterTuner => {
                 match self.get_rpc_client() {
                     Some(rpc_client) => {
-                        let component = MicroComponent::new(SlaveParameterTunerModel::new(*self.preferences.borrow().get_default_param_tuner_graph_view_point_num_limit()), sender.clone());
+                        let component = MicroComponent::new(SlaveParameterTunerModel::new(*self.preferences.borrow().get_param_tuner_graph_view_point_num_limit(),
+                                                                                          *self.preferences.borrow().get_param_tuner_graph_view_update_interval()),
+                                                            sender.clone());
                         let window = component.root_widget();
                         window.set_transient_for(app_window.upgrade().as_ref());
                         window.set_visible(true);

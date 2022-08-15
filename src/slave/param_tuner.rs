@@ -203,6 +203,7 @@ pub struct SlaveParameterTunerModel {
     #[no_eq]
     communication_msg_sender: Option<async_std::channel::Sender<SlaveParameterTunerCommunicationMsg>>,
     graph_view_point_num_limit: u16,
+    graph_view_update_interval: u16,
     stopped: bool,
 }
 
@@ -438,11 +439,12 @@ impl FactoryPrototype for ControlLoopModel {
 }
 
 impl SlaveParameterTunerModel {
-    pub fn new(graph_view_point_num_limit: u16) -> Self {
+    pub fn new(graph_view_point_num_limit: u16, graph_view_update_interval: u16) -> Self {
         SlaveParameterTunerModel {
             propellers: FactoryVec::from_vec(DEFAULT_PROPELLERS.iter().map(|key| PropellerModel::new(key)).collect()),
             control_loops: FactoryVec::from_vec(DEFAULT_CONTROL_LOOPS.iter().map(|key| ControlLoopModel::new(key)).collect()),
             graph_view_point_num_limit,
+            graph_view_update_interval,
             ..Default::default()
         }
     }
@@ -614,7 +616,8 @@ enum SlaveParameterTunerCommunicationMsg {
 async fn parameter_tuner_main_loop(rpc_client: RpcClient,
                                    communication_sender: async_std::channel::Sender<SlaveParameterTunerCommunicationMsg>,
                                    communication_receiver: async_std::channel::Receiver<SlaveParameterTunerCommunicationMsg>,
-                                   model_sender: Sender<SlaveParameterTunerMsg>) -> Result<(), SlaveParameterTunerError> {
+                                   model_sender: Sender<SlaveParameterTunerMsg>,
+                                   graph_view_update_interval: u64) -> Result<(), SlaveParameterTunerError> {
     fn current_millis() -> u128 {
         SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis()
     }
@@ -628,7 +631,7 @@ async fn parameter_tuner_main_loop(rpc_client: RpcClient,
                 Ok(packet) => send!(model_sender, SlaveParameterTunerMsg::FeedbacksReceived(packet)),
                 Err(err) => communication_sender.send(SlaveParameterTunerCommunicationMsg::ConnectionLost(err)).await.unwrap_or_default(),
             }
-            task::sleep(Duration::from_millis(250)).await;
+            task::sleep(Duration::from_millis(graph_view_update_interval)).await;
         }
     }));
 
@@ -840,8 +843,9 @@ impl MicroModel for SlaveParameterTunerModel {
                 self.communication_msg_sender = Some(communication_sender.clone());
                 let sender = sender.clone();
                 communication_sender.try_send(SlaveParameterTunerCommunicationMsg::SetDebugModeEnabled(true)).unwrap_or_default();
+                let graph_view_update_interval = self.graph_view_update_interval;
                 let handle = task::spawn(async move {
-                    parameter_tuner_main_loop(rpc_client, communication_sender, communication_receiver, sender).await.map_err(|err| Box::new(err) as Box<dyn Error + Send>)
+                    parameter_tuner_main_loop(rpc_client, communication_sender, communication_receiver, sender, graph_view_update_interval as u64).await.map_err(|err| Box::new(err) as Box<dyn Error + Send>)
                 });
                 send!(parent_sender, SlaveMsg::CommunicationMessage(SlaveCommunicationMsg::Block(handle)));
             },

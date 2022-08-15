@@ -91,7 +91,9 @@ pub struct PreferencesModel {
     pub default_video_decoder: VideoDecoder,
     pub default_colorspace_conversion: ColorspaceConversion,
     #[derivative(Default(value="64"))]
-    pub default_param_tuner_graph_view_point_num_limit: u16,
+    pub param_tuner_graph_view_point_num_limit: u16,
+    #[derivative(Default(value="250"))]
+    pub param_tuner_graph_view_update_interval: u16,
     #[derivative(Default(value="Duration::from_secs(10)"))]
     pub pipeline_timeout: Duration,
     #[derivative(Default(value="false"))]
@@ -102,6 +104,8 @@ pub struct PreferencesModel {
     pub video_sync_record_use_separate_directory: bool,
     #[derivative(Default(value="200"))]
     pub default_video_latency: u32,
+    #[derivative(Default(value="500"))]
+    pub default_status_info_update_interval: u16,
 }
 
 impl PreferencesModel {
@@ -120,12 +124,13 @@ pub enum PreferencesMsg {
     SetImageSaveFormat(ImageFormat),
     SetInitialSlaveNum(u8),
     SetInputSendingRate(u16),
+    SetParamTunerGraphViewUpdateInterval(u16),
     SetDefaultKeepVideoDisplayRatio(bool),
     SetDefaultVideoDecoderCodec(VideoCodec),
     SetDefaultVideoDecoderCodecProvider(VideoCodecProvider),
     SetDefaultVideoEncoderCodec(VideoCodec),
     SetDefaultVideoEncoderCodecProvider(VideoCodecProvider),
-    SetDefaultParameterTunerGraphViewPointNumberLimit(u16),
+    SetParameterTunerGraphViewPointNumberLimit(u16),
     SetDefaultColorspaceConversion(ColorspaceConversion),
     SetDefaultReencodeRecordingVideo(bool),
     SetDefaultUseDecodebin(bool),
@@ -136,6 +141,7 @@ pub enum PreferencesMsg {
     SetDefaultSlaveUrl(Url),
     SetPipelineTimeout(Duration),
     SetApplicationColorScheme(Option<AppColorScheme>),
+    SetDefaultStatusInfoUpdateInterval(u16),
     SaveToFile,
     OpenVideoDirectory,
     OpenImageDirectory,
@@ -202,7 +208,7 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                 },
             },
             add = &PreferencesPage {
-                set_title: "网络",
+                set_title: "通信",
                 set_icon_name: Some("network-transmit-receive-symbolic"),
                 add = &PreferencesGroup {
                     set_description: Some("与机器人的连接通信设置"),
@@ -225,13 +231,33 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                          },
                     },
                 },
+                add = &PreferencesGroup {
+                    set_description: Some("机器人状态信息接收设置"),
+                    set_title: "状态信息",
+                    add = &ActionRow {
+                        set_title: "状态信息更新时间间隔",
+                        set_subtitle: "用于确定每秒钟向机器人请求接收状态信息并测试连接状态的频率（需要重新连接以应用设置）",
+                        add_suffix = &SpinButton::with_range(50.0, 10000.0, 50.0) {
+                            set_value: track!(model.changed(PreferencesModel::default_status_info_update_interval()), model.default_status_info_update_interval as f64),
+                            set_digits: 0,
+                            set_valign: Align::Center,
+                            set_can_focus: false,
+                            connect_value_changed(sender) => move |button| {
+                                send!(sender, PreferencesMsg::SetDefaultStatusInfoUpdateInterval(button.value() as u16));
+                            }
+                        },
+                        add_suffix = &Label {
+                            set_label: "毫秒",
+                        },
+                    },
+                },
             },
             add = &PreferencesPage {
                 set_title: "控制",
                 set_icon_name: Some("input-gaming-symbolic"),
                 add = &PreferencesGroup {
                     set_title: "发送",
-                    set_description: Some("向下位机发送控制信号的设置（需要重新连接以应用更改）"),
+                    set_description: Some("向机器人发送控制信号的设置（需要重新连接以应用设置）"),
                     add = &ActionRow {
                         set_title: "增量发送",
                         set_subtitle: "每次发送只发送相对上一次发送的变化值以节省数据发送量",
@@ -244,7 +270,7 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                     },
                     add = &ActionRow {
                         set_title: "输入发送率",
-                        set_subtitle: "每秒钟向下位机发送的控制数据包的个数，该值越高意味着控制越灵敏，但在较差的网络条件下可能产生更大的延迟",
+                        set_subtitle: "每秒钟向机器人发送的控制数据包的个数，该值越高意味着控制越灵敏，但在较差的网络条件下可能产生更大的延迟",
                         add_suffix = &SpinButton::with_range(1.0, 1000.0, 1.0) {
                             set_value: track!(model.changed(PreferencesModel::default_input_sending_rate()), model.default_input_sending_rate as f64),
                             set_digits: 0,
@@ -499,16 +525,32 @@ impl Widgets<PreferencesModel, AppModel> for PreferencesWidgets {
                     set_title: "控制环",
                     set_description: Some("配置控制环调试选项"),
                     add = &ActionRow {
-                        set_title: "可视化最大点数",
-                        set_subtitle: "绘制控制环可视化图表时使用最多使用多少个点，这将影响最多能观测的历史数据",
+                        set_title: "反馈曲线最大点数",
+                        set_subtitle: "绘制控制环反馈曲线时使用最多使用点数，这将影响最多能观测的历史数据",
                         add_suffix = &SpinButton::with_range(1.0, 255.0, 1.0) {
-                            set_value: track!(model.changed(PreferencesModel::default_param_tuner_graph_view_point_num_limit()), model.default_param_tuner_graph_view_point_num_limit as f64),
+                            set_value: track!(model.changed(PreferencesModel::param_tuner_graph_view_point_num_limit()), model.param_tuner_graph_view_point_num_limit as f64),
                             set_digits: 0,
                             set_valign: Align::Center,
                             set_can_focus: false,
                             connect_value_changed(sender) => move |button| {
-                                send!(sender, PreferencesMsg::SetDefaultParameterTunerGraphViewPointNumberLimit(button.value() as u16));
+                                send!(sender, PreferencesMsg::SetParameterTunerGraphViewPointNumberLimit(button.value() as u16));
                             },
+                        },
+                    },
+                    add = &ActionRow {
+                        set_title: "反馈曲线更新时间间隔",
+                        set_subtitle: "控制环反馈曲线的更新速率，这将影响最多能观测的历史数据",
+                        add_suffix = &SpinButton::with_range(50.0, 10000.0, 50.0) {
+                            set_value: track!(model.changed(PreferencesModel::param_tuner_graph_view_update_interval()), model.param_tuner_graph_view_update_interval as f64),
+                            set_digits: 0,
+                            set_valign: Align::Center,
+                            set_can_focus: false,
+                            connect_value_changed(sender) => move |button| {
+                                send!(sender, PreferencesMsg::SetParamTunerGraphViewUpdateInterval(button.value() as u16));
+                            }
+                        },
+                        add_suffix = &Label {
+                            set_label: "毫秒",
                         },
                     },
                 },
@@ -542,7 +584,7 @@ impl ComponentUpdate<AppModel> for PreferencesModel {
             PreferencesMsg::SaveToFile => serde_json::to_string_pretty(&self).ok().and_then(|json| fs::write(get_preference_path(), json).ok()).unwrap(),
             PreferencesMsg::SetImageSavePath(path) => self.set_image_save_path(path),
             PreferencesMsg::SetImageSaveFormat(format) => self.set_image_save_format(format),
-            PreferencesMsg::SetDefaultParameterTunerGraphViewPointNumberLimit(limit) => self.set_default_param_tuner_graph_view_point_num_limit(limit),
+            PreferencesMsg::SetParameterTunerGraphViewPointNumberLimit(limit) => self.set_param_tuner_graph_view_point_num_limit(limit),
             PreferencesMsg::OpenVideoDirectory => gtk::show_uri(None as Option<&PreferencesWindow>, glib::filename_to_uri(self.get_video_save_path().to_str().unwrap(), None).unwrap().as_str(), gdk::CURRENT_TIME),
             PreferencesMsg::OpenImageDirectory => gtk::show_uri(None as Option<&PreferencesWindow>, glib::filename_to_uri(self.get_image_save_path().to_str().unwrap(), None).unwrap().as_str(), gdk::CURRENT_TIME),
             PreferencesMsg::SetDefaultColorspaceConversion(conversion) => self.set_default_colorspace_conversion(conversion),
@@ -574,6 +616,8 @@ impl ComponentUpdate<AppModel> for PreferencesModel {
                 }
                 send!(parent_sender, AppMsg::SetColorScheme(*self.get_application_color_scheme()));
             },
+            PreferencesMsg::SetDefaultStatusInfoUpdateInterval(interval) => self.set_default_status_info_update_interval(interval),
+            PreferencesMsg::SetParamTunerGraphViewUpdateInterval(interval) => self.set_param_tuner_graph_view_update_interval(interval),
         }
         send!(parent_sender, AppMsg::PreferencesUpdated(self.clone()));
     }
