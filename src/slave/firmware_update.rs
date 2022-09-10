@@ -29,7 +29,6 @@ use once_cell::unsync::OnceCell;
 use relm4::{send, MicroWidgets, MicroModel};
 use relm4_macros::micro_widget;
 
-use serde::{Serialize, Deserialize};
 use derivative::*;
 
 use jsonrpsee_core::client::ClientT;
@@ -57,13 +56,6 @@ pub struct SlaveFirmwareUpdaterModel {
     firmware_uploading_progress: f32,
     #[no_eq]
     _rpc_client: OnceCell<RpcClient>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SlaveFirmwarePacket {
-    data: String,
-    compression: String,
-    md5: String,
 }
 
 #[derive(Debug)]
@@ -122,14 +114,8 @@ impl MicroModel for SlaveFirmwareUpdaterModel {
                                 let mut bytes = Vec::new();
                                 file.read_to_end(&mut bytes).await.map_err(SlaveFirmwareUpdateError::IOError)?;
                                 let bytes = bytes.as_slice();
-                                let md5_string = format!("{:x}", md5::compute(&bytes));
                                 let bytes_encoded = base64::encode(bytes);
-                                let packet = SlaveFirmwarePacket {
-                                    data: bytes_encoded,
-                                    compression: String::from("none"),
-                                    md5: md5_string,
-                                };
-                                rpc_client.request::<()>(METHOD_UPDATE_FIRMWARE, Some(packet.to_rpc_params())).await.map(|_| send!(sender, SlaveFirmwareUpdaterMsg::FirmwareUploadProgressUpdated(1.0))).map_err(SlaveFirmwareUpdateError::RpcError)
+                                rpc_client.request::<()>(METHOD_UPDATE_FIRMWARE, Some(bytes_encoded.to_rpc_params())).await.map(|_| send!(sender, SlaveFirmwareUpdaterMsg::FirmwareUploadProgressUpdated(1.0))).map_err(SlaveFirmwareUpdateError::RpcError)
                             },
                             Err(err) => Err(SlaveFirmwareUpdateError::IOError(err)),
                         }
@@ -201,7 +187,8 @@ impl MicroWidgets<SlaveFirmwareUpdaterModel> for SlaveFirmwareUpdaterWidgets {
                                         set_valign: Align::Center,
                                         connect_clicked(sender, window) => move |_button| {
                                             let filter = FileFilter::new();
-                                            filter.add_suffix("bin");
+                                            filter.add_suffix("tar.gz");
+                                            filter.add_suffix("gz");
                                             filter.set_name(Some("固件文件"));
                                             std::mem::forget(select_path(FileChooserAction::Open, &[filter], &window, clone!(@strong sender => move |path| {
                                                 match path {
